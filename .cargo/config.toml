@@ -1,0 +1,17 @@
+# 工程级 cargo 配置（只对本项目生效，不改动 ~/.cargo 全局配置）
+#
+# 国内直连 crates.io 会 403，这里走 rsproxy 稀疏索引镜像；
+# 若不需要镜像，删掉本文件的 [source.*] 段即可。
+
+[source.crates-io]
+replace-with = "rsproxy-sparse"
+
+[source.rsproxy-sparse]
+registry = "sparse+https://rsproxy.cn/index/"
+
+[net]
+git-fetch-with-cli = true
+
+[build]
+# gpui 依赖树很大，并行度按本机核数自动取值；如需限流可改成具体数字
+jobs = 12
