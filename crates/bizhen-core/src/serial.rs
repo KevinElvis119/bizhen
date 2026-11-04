@@ -164,6 +164,37 @@ impl GrblLink {
         self.send_line("$X")
     }
 
+    /// 回零（`$H`）。
+    pub fn home(&mut self) -> Result<(), String> {
+        self.send_line("$H")
+    }
+
+    /// 点动：默认发专用 jog 指令，不改变 G 组状态。
+    ///
+    /// * GRBL ≥ 1.1：`$J=G21G91 X.. Y.. F..`
+    /// * 老固件不支持 `$J=`，退化为 `G21G91 X.. Y.. F..`
+    pub fn jog(
+        &mut self,
+        dx: f64,
+        dy: f64,
+        dz: f64,
+        feed: f64,
+        modern: bool,
+    ) -> Result<(), String> {
+        let mut cmd = String::from(if modern { "$J=G21G91" } else { "G21G91" });
+        if dx.abs() > 1e-9 {
+            cmd.push_str(&format!(" X{}", fmt_num(dx)));
+        }
+        if dy.abs() > 1e-9 {
+            cmd.push_str(&format!(" Y{}", fmt_num(dy)));
+        }
+        if dz.abs() > 1e-9 {
+            cmd.push_str(&format!(" Z{}", fmt_num(dz)));
+        }
+        cmd.push_str(&format!(" F{}", fmt_num(feed)));
+        self.send_line(&cmd)
+    }
+
     /// 软复位（Ctrl-X）。
     pub fn soft_reset(&mut self) -> Result<(), String> {
         self.port
@@ -174,9 +205,87 @@ impl GrblLink {
     }
 }
 
+fn fmt_num(v: f64) -> String {
+    let s = format!("{v:.3}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s.is_empty() || s == "-0" {
+        "0".into()
+    } else {
+        s.to_string()
+    }
+}
+
+/// GRBL 实时状态（`?` 的应答 ``<Idle|MPos:0.000,0.000,0.000|FS:0,0>``）。
+#[derive(Clone, Debug, Default)]
+pub struct MachineStatus {
+    /// Idle / Run / Jog / Hold / Door / Home / Alarm / Check / Sleep
+    pub state: String,
+    pub mpos: Option<(f64, f64, f64)>,
+    pub wpos: Option<(f64, f64, f64)>,
+    pub feed: Option<f64>,
+    pub spindle: Option<f64>,
+}
+
+impl MachineStatus {
+    /// 当前显示用的坐标：优先机械坐标。
+    pub fn position(&self) -> Option<(f64, f64, f64)> {
+        self.mpos.or(self.wpos)
+    }
+}
+
+/// 解析状态行；不是状态行时返回 `None`。
+pub fn parse_status(line: &str) -> Option<MachineStatus> {
+    let t = line.trim();
+    let inner = t.strip_prefix('<')?.strip_suffix('>')?;
+    let mut st = MachineStatus::default();
+    let mut parts = inner.split('|');
+    st.state = parts.next()?.to_string();
+    for p in parts {
+        if let Some(v) = p.strip_prefix("MPos:") {
+            st.mpos = parse_xyz(v);
+        } else if let Some(v) = p.strip_prefix("WPos:") {
+            st.wpos = parse_xyz(v);
+        } else if let Some(v) = p.strip_prefix("FS:") {
+            let mut it = v.split(',');
+            st.feed = it.next().and_then(|x| x.parse().ok());
+            st.spindle = it.next().and_then(|x| x.parse().ok());
+        }
+    }
+    Some(st)
+}
+
+fn parse_xyz(v: &str) -> Option<(f64, f64, f64)> {
+    let mut it = v.split(',');
+    let x = it.next()?.parse().ok()?;
+    let y = it.next()?.parse().ok()?;
+    let z = it.next().unwrap_or("0").parse().unwrap_or(0.0);
+    Some((x, y, z))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_grbl_status() {
+        let st = parse_status("<Idle|MPos:1.500,-2.000,3.250|FS:0,0>").unwrap();
+        assert_eq!(st.state, "Idle");
+        assert_eq!(st.mpos, Some((1.5, -2.0, 3.25)));
+        assert_eq!(st.feed, Some(0.0));
+        let run = parse_status("<Run|WPos:10,20,0|FS:1200,1000>").unwrap();
+        assert_eq!(run.state, "Run");
+        assert_eq!(run.position(), Some((10.0, 20.0, 0.0)));
+        assert!(parse_status("ok").is_none());
+    }
+
+    #[test]
+    fn jog_command_shape() {
+        let mut cmd = String::from("$J=G21G91");
+        cmd.push_str(&format!(" X{}", fmt_num(10.0)));
+        assert!(cmd.contains("X10"));
+        assert_eq!(fmt_num(-0.0), "0");
+        assert_eq!(fmt_num(1.500), "1.5");
+    }
 
     #[test]
     fn lists_ports_without_panicking() {
