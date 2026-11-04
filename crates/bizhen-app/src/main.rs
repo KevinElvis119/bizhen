@@ -14,9 +14,9 @@
 mod machine;
 
 use gpui::{
-    canvas, div, point, prelude::*, px, quad, rgb, size, App, Application, Bounds, ContentMask,
-    Context, KeyDownEvent, PathBuilder, Render, ScrollDelta, ScrollWheelEvent, SharedString,
-    Window, WindowBounds, WindowOptions,
+    canvas, div, point, prelude::*, px, quad, rgb, size, App, Bounds, ContentMask, Context,
+    KeyDownEvent, PathBuilder, Render, ScrollDelta, ScrollEvent, SharedString, Window,
+    WindowBounds, WindowOptions,
 };
 
 use bizhen_core::font::FontRegistry;
@@ -90,6 +90,10 @@ struct WriterApp {
     baud_menu: bool,
     jog_step: f64,
     jog_feed: f64,
+    /// 发出机器命令后保持刷新若干帧，等后台线程回报状态
+    poll_frames: u32,
+    /// 是否已经挂了 on_next_frame 链，避免重复挂
+    ticking: bool,
 
     focus: gpui::FocusHandle,
 }
@@ -158,12 +162,24 @@ impl WriterApp {
             baud_menu: false,
             jog_step: 10.0,
             jog_feed: 2500.0,
+            poll_frames: 0,
+            ticking: false,
             focus: cx.focus_handle(),
         };
         app.cursor = app.source.chars().count();
         app.relayout();
+        // 冒烟/演示：BIZHEN_DEMO_CONNECT=1 启动即连接第一个串口
+        if std::env::var("BIZHEN_DEMO_CONNECT").is_ok() {
+            if let Some(port) = app.ports.first().map(|p| p.name.clone()) {
+                let baud = BAUDS[app.baud_idx.min(BAUDS.len() - 1)];
+                app.machine
+                    .set_message(format!("正在连接 {port} @ {baud}…"));
+                app.machine.send(machine::Cmd::Connect { port, baud });
+                app.poke();
+            }
+        }
         let handle = app.focus.clone();
-        window.focus(&handle);
+        window.focus(&handle, cx);
         app
     }
 
@@ -387,7 +403,7 @@ impl WriterApp {
         cx.notify();
     }
 
-    fn on_wheel(&mut self, ev: &ScrollWheelEvent, _w: &mut Window, cx: &mut Context<Self>) {
+    fn on_wheel(&mut self, ev: &ScrollEvent, _w: &mut Window, cx: &mut Context<Self>) {
         let lines = self.source.split('\n').count() as f32;
         let max = ((lines - 1.0) * LINE_H).max(0.0);
         let dy = match ev.delta {
@@ -451,6 +467,11 @@ impl WriterApp {
         };
     }
 
+    /// 发过机器命令后保持一段时间刷新，等后台线程回报状态。
+    fn poke(&mut self) {
+        self.poll_frames = 180;
+    }
+
     fn connect_or_disconnect(&mut self, cx: &mut Context<Self>) {
         let st = self.machine.snapshot();
         if st.connected {
@@ -462,8 +483,12 @@ impl WriterApp {
                 return;
             };
             let baud = BAUDS[self.baud_idx.min(BAUDS.len() - 1)];
+            // 打开串口可能被驱动卡住几秒，先给界面一句「正在连接」，别让用户干等
+            self.machine
+                .set_message(format!("正在连接 {port} @ {baud}…"));
             self.machine.send(machine::Cmd::Connect { port, baud });
         }
+        self.poke();
         cx.notify();
     }
 
@@ -478,17 +503,21 @@ impl WriterApp {
         let cfg = GCodeConfig::default();
         let lines = gcode::generate(&self.doc.strokes(), &cfg, page.height, None).lines;
         self.machine.send(machine::Cmd::Send(lines));
+        self.poke();
         cx.notify();
     }
 
-    /// 每帧刷新机器状态（仅在已连接时保持循环）。
+    /// 每帧刷新机器状态：已连接或刚发过命令时保持循环。
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let st = self.machine.snapshot();
         if !st.connected && !st.message.is_empty() {
             self.status = st.message.clone().into();
         }
+        self.poll_frames = self.poll_frames.saturating_sub(1);
+        self.ticking = false;
         cx.notify();
-        if st.connected {
+        if st.connected || st.pending || self.poll_frames > 0 {
+            self.ticking = true;
             cx.on_next_frame(window, |this, window, cx| Self::tick(this, window, cx));
         }
     }
@@ -763,7 +792,7 @@ impl Render for WriterApp {
                 .p_3()
                 .track_focus(&focus)
                 .on_key_down(cx.listener(Self::on_key))
-                .on_scroll_wheel(cx.listener(Self::on_wheel))
+                .on_scroll(cx.listener(Self::on_wheel))
                 .child(editor)
         } else {
             let mut panel = div().flex().flex_col().gap_1().p_3();
@@ -1079,27 +1108,29 @@ impl Render for WriterApp {
                         "未连接".to_string()
                     },
                 ))
-                .child(div().text_xs().text_color(rgb(0x888888)).child(
-                    if machine_state.message.is_empty() {
-                        String::new()
-                    } else {
-                        machine_state.message.clone()
-                    },
-                ))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(0x888888))
+                        .child(machine_state.message.clone()),
+                )
                 .child(
                     div()
                         .flex()
                         .gap_1()
                         .child(button("unlock", "解锁", cx, |this, _w, cx| {
                             this.machine.send(machine::Cmd::Unlock);
+                            this.poke();
                             cx.notify();
                         }))
                         .child(button("home", "回零", cx, |this, _w, cx| {
                             this.machine.send(machine::Cmd::Home);
+                            this.poke();
                             cx.notify();
                         }))
                         .child(button("reset", "复位", cx, |this, _w, cx| {
                             this.machine.send(machine::Cmd::Reset);
+                            this.poke();
                             cx.notify();
                         })),
                 )
@@ -1146,6 +1177,7 @@ impl Render for WriterApp {
                         step: this.jog_step,
                         feed: this.jog_feed,
                     });
+                    this.poke();
                     cx.notify();
                 }))
         };
@@ -1253,8 +1285,11 @@ impl Render for WriterApp {
             root = root.child(build_dialog(&chain, &entries, font_page, &jitter, cx));
         }
 
-        // 已连接时持续刷新机器状态
-        if machine_state.connected {
+        // 已连接或刚发过机器命令时刷新状态（只在没有现成链时起一条）
+        if (machine_state.connected || machine_state.pending || self.poll_frames > 0)
+            && !self.ticking
+        {
+            self.ticking = true;
             cx.on_next_frame(window, |this, window, cx| Self::tick(this, window, cx));
         }
 
@@ -1581,7 +1616,7 @@ fn build_dialog(
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_kit::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(1000.), px(730.)), cx);
         cx.open_window(
             WindowOptions {
@@ -1595,7 +1630,7 @@ fn main() {
             |window, cx| cx.new(|cx| WriterApp::new(window, cx)),
         )
         .unwrap();
-        cx.on_window_closed(|cx| cx.quit()).detach();
+        cx.on_window_closed(|cx, _| cx.quit()).detach();
         cx.activate(true);
     });
 }
