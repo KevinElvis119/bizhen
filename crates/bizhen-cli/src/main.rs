@@ -21,6 +21,7 @@ use bizhen_core::font::FontRegistry;
 use bizhen_core::gcode::{self, GCodeConfig};
 use bizhen_core::markdown::{self, MarkdownStyle, PageSpec};
 use bizhen_core::render;
+#[cfg(feature = "serial")]
 use bizhen_core::serial;
 use bizhen_core::symbols::SymbolFonts;
 
@@ -29,6 +30,7 @@ fn main() -> ExitCode {
     match args.first().map(|s| s.as_str()) {
         Some("fonts") => cmd_fonts(),
         Some("info") => cmd_info(&args),
+        #[cfg(feature = "serial")]
         Some("ports") => cmd_ports(),
         Some("md") => cmd_md(&args[1..]),
         _ => {
@@ -94,6 +96,7 @@ fn cmd_info(args: &[String]) -> ExitCode {
     }
 }
 
+#[cfg(feature = "serial")]
 fn cmd_ports() -> ExitCode {
     let ports = serial::list_ports();
     if ports.is_empty() {

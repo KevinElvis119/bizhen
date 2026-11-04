@@ -57,8 +57,51 @@ cargo run -p bizhen-cli -- md tests\rich.md -o out.json      # 笔画数据，�
 cargo run -p bizhen-cli -- ports                              # 列串口
 ```
 
+macOS / Linux：
+
+```bash
+. ./scripts/dev.sh
+cargo test
+cargo run -p bizhen-cli -- md tests/rich.md -o out.gcode
+```
+
 `bizhen-cli md` 的选项：`--page A4|A5|B5|A3|Letter|…`、`--landscape`、`--margin 10`、
 `--size 4`、`--font STRK-Kaiti,futural`。
+
+## 跨平台
+
+代码本身**没有平台相关的逻辑**，平台差异都收敛在依赖与构建脚本里：
+
+| 平台 | 核心层 + CLI | 桌面端（gpui 0.2） | 额外系统依赖 |
+|---|---|---|---|
+| Windows | ✅ 已验证（本机） | ✅ 已验证（DirectX / blade） | MSVC 生成工具（`dev.ps1` 会导入 vcvars） |
+| macOS | ✅ 已用 `cargo check --target aarch64-apple-darwin` 验证 | ⏳ 待实机 | Xcode Command Line Tools |
+| Linux | ⏳ 待实机（代码层无平台分支；见下） | ⏳ 待实机（Vulkan + X11/Wayland） | 见下 |
+
+> 交叉检查记录：macOS 目标下 `bizhen-core` + `bizhen-cli` 类型检查通过；
+> Linux 目标仅在 `libudev-sys` 的 pkg-config 探测处停下（缺系统包，不是代码问题）。
+
+Linux 需要装的系统包（Debian/Ubuntu 为例）：
+
+```
+libudev-dev            # serialport 枚举串口（可用 --no-default-features 跳过）
+libxkbcommon-dev libwayland-dev libx11-xcb-dev   # gpui 的 X11/Wayland 后端
+libfontconfig-dev      # gpui 的字体加载（font-kit）
+libvulkan-dev mesa-vulkan-drivers                # gpui 的 GPU 后端（blade）
+```
+
+只想要「Markdown → G-code」、不需要串口的场合，可以不装 `libudev-dev`：
+
+```bash
+cargo build -p bizhen-cli --no-default-features   # 关掉 serial 特性
+```
+
+两个注意点：
+
+* **中文界面字体**：界面上的中文标签走系统字体，Linux 容器里若没装中文字体会显示方块；
+  文档预览是笔画绘制的，不受影响。装 `fonts-noto-cjk` 即可。
+* **文件对话框**：`rfd` 在 Linux 上默认走 xdg-portal，需要桌面 portal 服务；
+  纯 headless 环境下「打开/导出」按钮会失败，但命令行导出不受影响。
 
 ## 目录
 

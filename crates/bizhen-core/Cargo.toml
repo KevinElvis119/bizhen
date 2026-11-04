@@ -5,9 +5,14 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = ["serial"]
+# 串口联机（GRBL）：Linux 上会带进 libudev，不需要时可 --no-default-features
+serial = ["dep:serialport"]
+
 [dependencies]
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 pulldown-cmark = "0.13.6"
-serialport = "4.10.1"
+serialport = { version = "4.10.1", optional = true }

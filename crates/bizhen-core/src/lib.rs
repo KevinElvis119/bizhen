@@ -23,6 +23,7 @@ pub mod layout;
 pub mod markdown;
 pub mod math;
 pub mod render;
+#[cfg(feature = "serial")]
 pub mod serial;
 pub mod stroke;
 pub mod symbols;

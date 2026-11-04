@@ -10,6 +10,7 @@ name = "bizhen"
 path = "src/main.rs"
 
 [dependencies]
-bizhen-core.workspace = true
+# 界面一定需要串口（打印按钮），因此显式打开 serial 特性
+bizhen-core = { workspace = true, features = ["serial"] }
 gpui = "0.2"
 rfd = "0.17.2"
