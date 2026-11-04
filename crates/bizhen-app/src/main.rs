@@ -98,7 +98,8 @@ impl WriterApp {
             registry,
             font_names,
             jitter: JitterParams::default(),
-            dialog: false,
+            // 冒烟/演示用：BIZHEN_DEMO_DIALOG=1 启动即打开弹窗
+            dialog: std::env::var("BIZHEN_DEMO_DIALOG").is_ok(),
             font_page: 0,
             symbols,
             doc: RenderedDoc::default(),
