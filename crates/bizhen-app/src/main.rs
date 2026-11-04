@@ -1,4 +1,4 @@
-//! `ws-app` —— WriterStudio-RS 的 GPUI 桌面端。
+//! `bizhen-app` —— Bizhen 的 GPUI 桌面端。
 //!
 //! 布局：顶部参数条 / 左侧 Markdown 编辑区 / 右侧分页预览 / 底部状态与机器栏。
 //!
@@ -15,12 +15,12 @@ use gpui::{
     KeyDownEvent, PathBuilder, Render, SharedString, Window, WindowBounds, WindowOptions,
 };
 
-use ws_core::font::FontRegistry;
-use ws_core::gcode::{self, GCodeConfig};
-use ws_core::markdown::{self, MarkdownStyle, PageSpec, RenderedDoc};
-use ws_core::serial::{self, PortInfo};
-use ws_core::symbols::SymbolFonts;
-use ws_core::Stroke;
+use bizhen_core::font::FontRegistry;
+use bizhen_core::gcode::{self, GCodeConfig};
+use bizhen_core::markdown::{self, MarkdownStyle, PageSpec, RenderedDoc};
+use bizhen_core::serial::{self, PortInfo};
+use bizhen_core::symbols::SymbolFonts;
+use bizhen_core::Stroke;
 
 /// 纸张预设（mm，纵向：名称、宽、高、页边距）
 const PRESETS: &[(&str, f64, f64, f64)] = &[
@@ -44,7 +44,7 @@ struct WriterApp {
     size_mm: f64,
     wrap: f64,
     page: PageSpec,
-    fonts: Vec<ws_core::font::FontFamily>,
+    fonts: Vec<bizhen_core::font::FontFamily>,
     symbols: SymbolFonts,
     doc: RenderedDoc,
     page_index: usize,
@@ -442,7 +442,7 @@ impl Render for WriterApp {
                 div()
                     .text_sm()
                     .text_color(rgb(0xffffff))
-                    .child("WriterStudio-RS"),
+                    .child("笔阵 · Bizhen"),
             )
             .child(div().flex_1())
             .child(button(
@@ -676,12 +676,12 @@ impl Render for WriterApp {
 
 fn main() {
     Application::new().run(|cx: &mut App| {
-        let bounds = Bounds::centered(None, size(px(1280.), px(860.)), cx);
+        let bounds = Bounds::centered(None, size(px(1120.), px(740.)), cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(gpui::TitlebarOptions {
-                    title: Some("WriterStudio-RS".into()),
+                    title: Some("笔阵 Bizhen".into()),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -693,3 +693,4 @@ fn main() {
         cx.activate(true);
     });
 }
+

@@ -539,6 +539,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "bizhen"
+version = "0.1.0"
+dependencies = [
+ "bizhen-core",
+ "gpui",
+ "rfd",
+]
+
+[[package]]
+name = "bizhen-cli"
+version = "0.1.0"
+dependencies = [
+ "bizhen-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "bizhen-core"
+version = "0.1.0"
+dependencies = [
+ "pulldown-cmark",
+ "serde",
+ "serde_json",
+ "serialport",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "blade-graphics"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6826,35 +6855,6 @@ name = "writeable"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
-
-[[package]]
-name = "ws-app"
-version = "0.1.0"
-dependencies = [
- "gpui",
- "rfd",
- "ws-core",
-]
-
-[[package]]
-name = "ws-cli"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "ws-core",
-]
-
-[[package]]
-name = "ws-core"
-version = "0.1.0"
-dependencies = [
- "pulldown-cmark",
- "serde",
- "serde_json",
- "serialport",
- "thiserror 2.0.21",
-]
 
 [[package]]
 name = "x11"

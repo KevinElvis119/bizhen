@@ -1,5 +1,7 @@
-# 开发计划
+# 笔阵（Bizhen）· 开发计划
 
+> 项目名取自《笔阵图》：**笔**是书写，**阵**是排布。
+>
 > 目标：用 Rust 重写 WriterStudio，**只保留 Markdown 排版 → G-code** 这条主线，
 > 字体与排版度量对齐原版，并新增**分页**。UI 用 gpui。
 
@@ -80,7 +82,7 @@ G-code 生成 gcode：页内笔画 → 机器坐标 → 抬落笔 + 直线插补
 | `machine/gcode_gen.py` | 笔画 → G-code | `gcode/gen.rs` | M4 |
 | `machine/path_optimizer.py` | 笔序（阅读顺序） | `gcode/order.rs` | M4 |
 | `page_presets.py` | 纸张预设 | `page.rs` | M3 |
-| `ui/*` | PySide6 界面 | `ws-app`（gpui） | M5 |
+| `ui/*` | PySide6 界面 | `bizhen-app`（gpui） | M5 |
 
 ---
 
@@ -93,10 +95,10 @@ G-code 生成 gcode：页内笔画 → 机器坐标 → 抬落笔 + 直线插补
 - [x] 字库资源入库（32 款 `.jhf` + `STRK-Kaiti.json`）
 - [x] BBox / Stroke / RDP
 - [x] `.jhf` 解析 + 度量（**与 Python 逐位一致**：ascent 25 / descent −7 / advance 17.979166666666668 / A 高 21）
-- [x] `ws-cli fonts|info`
+- [x] `bizhen-cli fonts|info`
 - [x] `cargo test` 5 项通过
 
-**验收**：`cargo test` 全绿；`ws-cli info futural` 的数值与 Python 版一致。
+**验收**：`cargo test` 全绿；`bizhen-cli info futural` 的数值与 Python 版一致。
 
 ---
 
@@ -109,14 +111,14 @@ G-code 生成 gcode：页内笔画 → 机器坐标 → 抬落笔 + 直线插补
       （默认链 = 第一款 stroke-json + `futural`/`futuram`/`scripts` 中存在的第一款）
 - [ ] 缺字上报：`missing: Vec<char>`（去重、保持出现顺序）
 
-**验收**：`ws-cli info STRK-Kaiti` 字形数 = 20976；载入耗时 < 300 ms；未使用时不占内存。
+**验收**：`bizhen-cli info STRK-Kaiti` 字形数 = 20976；载入耗时 < 300 ms；未使用时不占内存。
 
 ---
 
 ### M1.5 GPUI 冒烟（提前排风险，半天）
 
-- [ ] `ws-app` 加 `gpui = "0.2"`，跑通一个空白窗口
-- [ ] 验证：Windows + MSVC 工具链、字体渲染、`cargo run -p ws-app` 能起窗口
+- [ ] `bizhen-app` 加 `gpui = "0.2"`，跑通一个空白窗口
+- [ ] 验证：Windows + MSVC 工具链、字体渲染、`cargo run -p bizhen-app` 能起窗口
 - [ ] 若 gpui 在 Windows 上不可用，**立即上报并改方案**（备选：egui / wgpu 自绘 / 先只做 CLI+导出）
 
 **验收**：能起一个 800×600 窗口，画一条折线。
@@ -167,10 +169,10 @@ G-code 生成 gcode：页内笔画 → 机器坐标 → 抬落笔 + 直线插补
 - [ ] `gcode/gen.rs`：抬笔 → 移到起点 → 落笔 → 直线插补 → 收笔；
       入笔斜落 / 收笔斜抬（`entry_taper_mm` / `stroke_taper_mm`）；抽稀
 - [ ] `gcode/order.rs`：阅读顺序（按分组、组内保持顺序、组间先上后下先左后右）
-- [ ] `ws-cli md <file.md> -o out.gcode`：Markdown → 分页 → G-code，打印统计
+- [ ] `bizhen-cli md <file.md> -o out.gcode`：Markdown → 分页 → G-code，打印统计
       （绘制长度、空程、笔画数、估算时间）
 
-**验收**：`ws-cli md sample.md` 生成的 G-code 与原版对同一内容的输出**逐行一致**
+**验收**：`bizhen-cli md sample.md` 生成的 G-code 与原版对同一内容的输出**逐行一致**
 （或差异可解释：分页导致的对象顺序不同）。
 
 ---

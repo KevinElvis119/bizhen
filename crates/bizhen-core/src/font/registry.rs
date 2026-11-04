@@ -10,12 +10,12 @@ use std::path::{Path, PathBuf};
 use crate::font::jhf::parse_hershey_jhf;
 use crate::font::model::FontFamily;
 
-/// 内置字库根目录：优先环境变量 `WS_FONTS_DIR`，否则用仓库内 `assets/fonts`。
+/// 内置字库根目录：优先环境变量 `BIZHEN_FONTS_DIR`，否则用仓库内 `assets/fonts`。
 ///
 /// 发布时可以把 `assets/fonts` 拷到可执行文件旁的 `fonts/`，届时这里再加
 /// 「exe 同级目录」的查找分支。
 pub fn fonts_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("WS_FONTS_DIR") {
+    if let Ok(dir) = std::env::var("BIZHEN_FONTS_DIR") {
         return PathBuf::from(dir);
     }
     Path::new(env!("CARGO_MANIFEST_DIR"))

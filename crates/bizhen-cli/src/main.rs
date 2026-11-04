@@ -1,10 +1,10 @@
-//! `ws-cli` —— 无界面的命令行入口：排版、导出、串口诊断。
+//! `bizhen-cli` —— 无界面的命令行入口：排版、导出、串口诊断。
 //!
 //! ```text
-//! ws-cli fonts                     列出内置字体
-//! ws-cli info <font>               打印一款字体的度量信息
-//! ws-cli ports                     列出串口
-//! ws-cli md <file.md> [选项]        排版并导出
+//! bizhen-cli fonts                     列出内置字体
+//! bizhen-cli info <font>               打印一款字体的度量信息
+//! bizhen-cli ports                     列出串口
+//! bizhen-cli md <file.md> [选项]        排版并导出
 //! ```
 //!
 //! `md` 的选项：
@@ -17,12 +17,12 @@
 
 use std::process::ExitCode;
 
-use ws_core::font::FontRegistry;
-use ws_core::gcode::{self, GCodeConfig};
-use ws_core::markdown::{self, MarkdownStyle, PageSpec};
-use ws_core::render;
-use ws_core::serial;
-use ws_core::symbols::SymbolFonts;
+use bizhen_core::font::FontRegistry;
+use bizhen_core::gcode::{self, GCodeConfig};
+use bizhen_core::markdown::{self, MarkdownStyle, PageSpec};
+use bizhen_core::render;
+use bizhen_core::serial;
+use bizhen_core::symbols::SymbolFonts;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -33,14 +33,14 @@ fn main() -> ExitCode {
         Some("md") => cmd_md(&args[1..]),
         _ => {
             eprintln!(
-                "WriterStudio-RS v{}\n\n\
+                "Bizhen v{}\n\n\
                  用法：\n  \
-                 ws-cli fonts                      列出内置字体\n  \
-                 ws-cli info <font>                字体度量\n  \
-                 ws-cli ports                      列出串口\n  \
-                 ws-cli md <file.md> [-o out.gcode|out.svg] [--page A4] [--landscape]\n      \
+                 bizhen-cli fonts                      列出内置字体\n  \
+                 bizhen-cli info <font>                字体度量\n  \
+                 bizhen-cli ports                      列出串口\n  \
+                 bizhen-cli md <file.md> [-o out.gcode|out.svg] [--page A4] [--landscape]\n      \
                  [--margin 10] [--size 4] [--font kai,futural]",
-                ws_core::VERSION
+                bizhen_core::VERSION
             );
             ExitCode::from(2)
         }
@@ -66,7 +66,7 @@ fn cmd_fonts() -> ExitCode {
 
 fn cmd_info(args: &[String]) -> ExitCode {
     let Some(name) = args.get(1) else {
-        eprintln!("用法：ws-cli info <font>");
+        eprintln!("用法：bizhen-cli info <font>");
         return ExitCode::from(2);
     };
     let mut reg = FontRegistry::builtin();
@@ -88,7 +88,7 @@ fn cmd_info(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         None => {
-            eprintln!("没有这款字体：{name}（先用 ws-cli fonts 查看）");
+            eprintln!("没有这款字体：{name}（先用 bizhen-cli fonts 查看）");
             ExitCode::from(1)
         }
     }
@@ -191,7 +191,7 @@ fn cmd_md(args: &[String]) -> ExitCode {
     }
 
     let Some(input_path) = input else {
-        eprintln!("用法：ws-cli md <file.md> [-o out.gcode|out.svg]");
+        eprintln!("用法：bizhen-cli md <file.md> [-o out.gcode|out.svg]");
         return ExitCode::from(2);
     };
     let src = match std::fs::read_to_string(&input_path) {

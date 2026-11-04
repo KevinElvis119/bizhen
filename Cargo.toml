@@ -1,8 +1,8 @@
 [workspace]
 resolver = "2"
-members = ["crates/ws-core", "crates/ws-cli", "crates/ws-app"]
-# 默认只构建纯逻辑层：gpui 应用单独 -p ws-app 构建（首次编译耗时很久）
-default-members = ["crates/ws-core", "crates/ws-cli"]
+members = ["crates/bizhen-core", "crates/bizhen-cli", "crates/bizhen-app"]
+# 默认只构建纯逻辑层：gpui 应用单独 -p bizhen-app 构建（首次编译耗时很久）
+default-members = ["crates/bizhen-core", "crates/bizhen-cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,7 +12,7 @@ repository = "https://github.com/ZhengXieGang/WriterStudio"
 rust-version = "1.85"
 
 [workspace.dependencies]
-ws-core = { path = "crates/ws-core" }
+bizhen-core = { path = "crates/bizhen-core" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"

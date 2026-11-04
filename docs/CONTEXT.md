@@ -1,6 +1,9 @@
 # 交接上下文（Context Handoff）
 
-> 本文件是「明天接手时只看这一份就能继续」的备忘。写完于 2026-11-04 凌晨。
+> 项目名：**笔阵（Bizhen）**——取自卫夫人《笔阵图》。「笔」是书写，「阵」是排布：
+> 把 Markdown 排成阵，再交给写字机一笔一笔写出来。
+>
+> 本文件是「接手时只看这一份就能继续」的备忘。
 
 ---
 
@@ -10,7 +13,7 @@
 |---|---|
 | 原项目 | <https://github.com/ZhengXieGang/WriterStudio> |
 | 本机完整源码 | `C:\Users\zencoding\WriterStudio`（git HEAD `e0ee07b`，origin 指向上面） |
-| 工作区里的 `E:\WritingRobot\WriterStudio` | **坏的 git 目录**：只有 `.git\hooks`、`info`、`objects`、`refs`，缺 `HEAD`/`config`，`git status` 报 "not a git repository"。不影响开发，新工程在 `E:\WritingRobot\writerstudio-rs` |
+| 工作区里的 `E:\WritingRobot\WriterStudio` | **坏的 git 目录**：只有 `.git\hooks`、`info`、`objects`、`refs`，缺 `HEAD`/`config`，`git status` 报 "not a git repository"。不影响开发，重写工程在 `E:\WritingRobot\bizhen` |
 | 原版技术栈 | Python 3 + PySide6 + markdown-it + matplotlib(mathtext) + numpy/fontTools |
 | 原版规模 | `content/markdown.py` 1029 行、`content/equation.py` 864 行、`fonts/layout.py` 707 行 |
 
@@ -35,9 +38,9 @@
 
 ```powershell
 . .\scripts\dev.ps1
-cd E:\WritingRobot\writerstudio-rs
+cd E:\WritingRobot\bizhen
 cargo test          # 5 passed
-cargo run -p ws-cli -- info futural
+cargo run -p bizhen-cli -- info futural
 ```
 
 ---
@@ -155,7 +158,7 @@ A4 = 210 × 297 mm，margin 10 mm；Letter = 215.9 × 279.4，margin 12.7 mm。
 
 ### 6.2 排版结果（同一 Markdown + 同一字体链）
 
-`cargo run -p ws-cli -- md tests/*.md` 与 Python `render_markdown` 对比
+`cargo run -p bizhen-cli -- md tests/*.md` 与 Python `render_markdown` 对比
 （字体链 = `STRK-Kaiti` + `futural`，正文字号 4mm，行距 1.5，折行宽 160mm）：
 
 | 样例 | Python（笔画/包围盒） | Rust | 结果 |

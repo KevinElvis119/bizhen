@@ -1,4 +1,8 @@
-# WriterStudio-RS
+# 笔阵 · Bizhen
+
+> **笔**是书写，**阵**是排布。
+> 名字取自卫夫人《笔阵图》——写字先讲「阵」，哪一笔在哪、行与行怎么让位，都有章法。
+> 这个程序做的事正是一样：把 Markdown 排成阵，再交给写字机一笔一笔写出来。
 
 [WriterStudio](https://github.com/ZhengXieGang/WriterStudio)（Python + PySide6）的 Rust 重写版：
 只保留 **Markdown 排版 → G-code** 这条主线，去掉笔画编辑、手写扰动、TikZ/SVG 导入、MCP 等功能，
@@ -44,36 +48,36 @@ cargo build
 cargo test
 
 # 3) 桌面端
-cargo run -p ws-app
+cargo run -p bizhen-app
 
 # 4) 命令行：Markdown → 分页 → G-code / SVG / JSON
-cargo run -p ws-cli -- md tests\rich.md -o out.gcode
-cargo run -p ws-cli -- md tests\rich.md -o out.svg
-cargo run -p ws-cli -- md tests\rich.md -o out.json      # 笔画数据，可配 tools/render_png.py 出图
-cargo run -p ws-cli -- ports                              # 列串口
+cargo run -p bizhen-cli -- md tests\rich.md -o out.gcode
+cargo run -p bizhen-cli -- md tests\rich.md -o out.svg
+cargo run -p bizhen-cli -- md tests\rich.md -o out.json      # 笔画数据，可配 tools/render_png.py 出图
+cargo run -p bizhen-cli -- ports                              # 列串口
 ```
 
-`ws-cli md` 的选项：`--page A4|A5|B5|A3|Letter|…`、`--landscape`、`--margin 10`、
+`bizhen-cli md` 的选项：`--page A4|A5|B5|A3|Letter|…`、`--landscape`、`--margin 10`、
 `--size 4`、`--font STRK-Kaiti,futural`。
 
 ## 目录
 
 ```
-writerstudio-rs/
+bizhen/
 ├── Cargo.toml               # workspace：default-members 只含核心层
 ├── .cargo/config.toml       # 工程内 cargo 配置（rsproxy 镜像），不动全局
 ├── assets/fonts/
 │   ├── hershey/*.jhf        # 32 款单线拉丁/希腊/符号（Hershey，可自由使用）
 │   └── stroke-json/STRK-Kaiti.json   # 中文单线字库，20976 字形，8.4 MB
 ├── crates/
-│   ├── ws-core/             # 纯逻辑：字体/排版/Markdown/公式/分页/G-code/串口
-│   ├── ws-cli/              # 命令行：排版导出、串口列举、字库信息
-│   └── ws-app/              # GPUI 桌面端
+│   ├── bizhen-core/             # 纯逻辑：字体/排版/Markdown/公式/分页/G-code/串口
+│   ├── bizhen-cli/              # 命令行：排版导出、串口列举、字库信息
+│   └── bizhen-app/              # GPUI 桌面端
 ├── docs/
 │   ├── DEVELOPMENT_PLAN.md  # 里程碑、任务、验收标准
 │   └── CONTEXT.md           # 交接上下文：源码出处、参数默认值、对照数据
 ├── scripts/dev.ps1|dev.cmd  # 环境载入（Rust + MSVC）
-└── tools/render_png.py      # 把 ws-cli 的 JSON 笔画渲染成 PNG（视觉核对）
+└── tools/render_png.py      # 把 bizhen-cli 的 JSON 笔画渲染成 PNG（视觉核对）
 ```
 
 ## 许可
@@ -81,3 +85,12 @@ writerstudio-rs/
 GPL-3.0-or-later（与原项目一致）。内置 Hershey 字体数据须随附致谢：
 `assets/fonts/hershey/ACKNOWLEDGEMENT.txt`。中文单线字库来自
 [chinese-hershey-font](https://github.com/LingDong-/chinese-hershey-font)（MIT）。
+
+## 为什么叫「笔阵」
+
+卫夫人《笔阵图》讲的是写字的布阵：一点如高峰坠石、一横如千里阵云——每一笔落在哪里，
+整幅字的气脉就在哪里。程序做的正是同一件事：先把 Markdown 排成「阵」（分页、折行、
+表格列宽、公式位置），再让写字机按这个阵一笔一笔落墨。
+
+英文名 **Bizhen** 直接取音；crate 前缀 `bizhen-`、可执行文件 `bizhen`（界面）与
+`bizhen-cli`（命令行）。
