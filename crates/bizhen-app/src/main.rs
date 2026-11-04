@@ -17,7 +17,9 @@ use gpui::{
     canvas, div, point, prelude::*, px, quad, rgb, size, App, Bounds, ContentMask, Context, Entity,
     PathBuilder, Render, SharedString, Subscription, Window, WindowBounds, WindowOptions,
 };
+use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 
 use bizhen_core::font::FontRegistry;
 use bizhen_core::gcode::{self, GCodeConfig};
@@ -83,8 +85,6 @@ struct WriterApp {
     ports: Vec<PortInfo>,
     port_idx: usize,
     baud_idx: usize,
-    port_menu: bool,
-    baud_menu: bool,
     jog_step: f64,
     jog_feed: f64,
     /// 发出机器命令后保持刷新若干帧，等后台线程回报状态
@@ -151,8 +151,6 @@ impl WriterApp {
             ports: serial::list_ports(),
             port_idx: 0,
             baud_idx: 4, // 115200
-            port_menu: false,
-            baud_menu: false,
             jog_step: 10.0,
             jog_feed: 2500.0,
             poll_frames: 0,
@@ -304,7 +302,6 @@ impl WriterApp {
     fn refresh_ports(&mut self) {
         self.ports = serial::list_ports();
         self.port_idx = 0;
-        self.port_menu = false;
         self.status = if self.ports.is_empty() {
             "没有找到串口".into()
         } else {
@@ -495,7 +492,6 @@ impl Render for WriterApp {
             .map(|p| p.strokes.clone())
             .unwrap_or_default();
         let zoom = self.zoom;
-        let all_lines: Vec<String> = self.source.split('\n').map(|s| s.to_string()).collect();
         let total_pages = self.doc.pages.len().max(1);
         let status = self.status.clone();
         let size_mm_footer = self.size_mm;
@@ -510,8 +506,6 @@ impl Render for WriterApp {
             .map(|p| p.name.clone())
             .unwrap_or_else(|| "无串口".into());
         let baud = BAUDS[self.baud_idx.min(BAUDS.len() - 1)];
-        let port_menu = self.port_menu;
-        let baud_menu = self.baud_menu;
 
         // ---------------- 顶部 ----------------
         let header = div()
@@ -819,39 +813,68 @@ impl Render for WriterApp {
         );
 
         // ---------------- 右侧机器栏 ----------------
-        let mut machine_panel = div().flex().flex_col().gap_1().p_3();
-        machine_panel = machine_panel
+        // 串口 / 波特率：用 Kit 的下拉菜单（Button + PopupMenu）
+        let app_weak = cx.entity().downgrade();
+        let ports_snapshot: Vec<String> = self
+            .ports
+            .iter()
+            .map(|p| format!("{} {}", p.name, p.description))
+            .collect();
+        let selected_port = self.port_idx;
+        let selected_baud = self.baud_idx;
+        let port_menu = {
+            let weak = app_weak.clone();
+            let items = ports_snapshot.clone();
+            Button::new("port")
+                .label(format!("{port_name} ▾"))
+                .dropdown_menu(move |mut menu, _, _| {
+                    if items.is_empty() {
+                        menu = menu.item(PopupMenuItem::new("没有串口").disabled(true));
+                    }
+                    for (i, label) in items.iter().enumerate() {
+                        let weak = weak.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new(label.clone())
+                                .checked(i == selected_port)
+                                .on_click(move |_, _, cx| {
+                                    let _ = weak.update(cx, |app: &mut WriterApp, cx| {
+                                        app.port_idx = i;
+                                        cx.notify();
+                                    });
+                                }),
+                        );
+                    }
+                    menu
+                })
+        };
+        let baud_menu = {
+            let weak = app_weak.clone();
+            Button::new("baud")
+                .label(format!("{baud} 波特 ▾"))
+                .dropdown_menu(move |mut menu, _, _| {
+                    for (i, b) in BAUDS.iter().enumerate() {
+                        let weak = weak.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new(format!("{b}"))
+                                .checked(i == selected_baud)
+                                .on_click(move |_, _, cx| {
+                                    let _ = weak.update(cx, |app: &mut WriterApp, cx| {
+                                        app.baud_idx = i;
+                                        cx.notify();
+                                    });
+                                }),
+                        );
+                    }
+                    menu
+                })
+        };
+        let mut machine_panel = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_3()
             .child(div().text_xs().text_color(rgb(0x888888)).child("串口"))
-            .child(button(
-                "port",
-                format!("{port_name} ▾"),
-                cx,
-                |this, _w, cx| {
-                    this.port_menu = !this.port_menu;
-                    cx.notify();
-                },
-            ));
-        if port_menu {
-            let mut list = div().flex().flex_col().gap_1();
-            if self.ports.is_empty() {
-                list = list.child(div().text_xs().text_color(rgb(0x888888)).child("没有串口"));
-            }
-            for (i, p) in self.ports.iter().enumerate() {
-                let label = format!("{} {}", p.name, p.description);
-                list = list.child(button(
-                    &format!("port_{i}"),
-                    label,
-                    cx,
-                    move |this, _w, cx| {
-                        this.port_idx = i;
-                        this.port_menu = false;
-                        cx.notify();
-                    },
-                ));
-            }
-            machine_panel = machine_panel.child(list);
-        }
-        machine_panel = machine_panel
+            .child(port_menu)
             .child(button(
                 "refresh_ports",
                 "刷新端口",
@@ -861,31 +884,7 @@ impl Render for WriterApp {
                     cx.notify();
                 },
             ))
-            .child(button(
-                "baud",
-                format!("{baud} 波特 ▾"),
-                cx,
-                |this, _w, cx| {
-                    this.baud_menu = !this.baud_menu;
-                    cx.notify();
-                },
-            ));
-        if baud_menu {
-            let mut list = div().flex().flex_col().gap_1();
-            for (i, b) in BAUDS.iter().enumerate() {
-                list = list.child(button(
-                    &format!("baud_{i}"),
-                    format!("{b}"),
-                    cx,
-                    move |this, _w, cx| {
-                        this.baud_idx = i;
-                        this.baud_menu = false;
-                        cx.notify();
-                    },
-                ));
-            }
-            machine_panel = machine_panel.child(list);
-        }
+            .child(baud_menu);
         machine_panel =
             machine_panel
                 .child(button(
@@ -1439,7 +1438,8 @@ fn main() {
             cx,
         );
         let bounds = Bounds::centered(None, size(px(1000.), px(730.)), cx);
-        cx.open_window(
+        // 用 Kit 的入口打开窗口：它会挂上 Root，菜单/弹窗等浮层才有地方落
+        gpui_kit::open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(gpui::TitlebarOptions {
@@ -1448,9 +1448,10 @@ fn main() {
                 }),
                 ..Default::default()
             },
+            cx,
             |window, cx| cx.new(|cx| WriterApp::new(window, cx)),
         )
-        .unwrap();
+        .expect("打开窗口失败");
         cx.on_window_closed(|cx, _| cx.quit()).detach();
         cx.activate(true);
     });
