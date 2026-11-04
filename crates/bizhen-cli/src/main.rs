@@ -23,6 +23,7 @@ use bizhen_core::markdown::{self, MarkdownStyle, PageSpec};
 use bizhen_core::render;
 #[cfg(feature = "serial")]
 use bizhen_core::serial;
+use bizhen_core::sim::JitterParams;
 use bizhen_core::symbols::SymbolFonts;
 
 fn main() -> ExitCode {
@@ -146,6 +147,9 @@ fn cmd_md(args: &[String]) -> ExitCode {
     let mut landscape = false;
     let mut style = MarkdownStyle::default();
     let mut font_names: Vec<String> = Vec::new();
+    let mut jitter_preset: Option<String> = None;
+    let mut seed: u64 = 20240910;
+    let mut intensity = 1.0_f64;
 
     let mut i = 0;
     while i < args.len() {
@@ -172,6 +176,22 @@ fn cmd_md(args: &[String]) -> ExitCode {
                 i += 1;
                 if let Some(s) = args.get(i).and_then(|s| s.parse::<f64>().ok()) {
                     style.size = s;
+                }
+            }
+            "--jitter" => {
+                i += 1;
+                jitter_preset = args.get(i).cloned();
+            }
+            "--seed" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse::<u64>().ok()) {
+                    seed = v;
+                }
+            }
+            "--intensity" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse::<f64>().ok()) {
+                    intensity = v;
                 }
             }
             "--font" => {
@@ -223,6 +243,19 @@ fn cmd_md(args: &[String]) -> ExitCode {
     if fonts.is_empty() {
         eprintln!("没有任何可用字体");
         return ExitCode::from(1);
+    }
+
+    // 手写抖动预设
+    if let Some(preset) = &jitter_preset {
+        style.jitter = match preset.as_str() {
+            "off" | "关闭" | "none" => JitterParams::default(),
+            "subtle" | "轻微" => JitterParams::subtle(style.size),
+            "natural" | "自然" => JitterParams::natural(style.size),
+            "strong" | "强烈" => JitterParams::strong(style.size),
+            _ => JitterParams::natural(style.size),
+        };
+        style.jitter.seed = seed;
+        style.jitter.intensity = intensity;
     }
 
     let symbols = SymbolFonts::load();

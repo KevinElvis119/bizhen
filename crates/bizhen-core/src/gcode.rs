@@ -430,9 +430,8 @@ pub fn generate(
         use_strokes = order_shortest(&use_strokes, start_point);
     }
 
-    let map = |p: Vec2| -> Vec2 {
-        page_to_machine(p, page_h, cfg.swap_xy, cfg.invert_x, cfg.invert_y)
-    };
+    let map =
+        |p: Vec2| -> Vec2 { page_to_machine(p, page_h, cfg.swap_xy, cfg.invert_x, cfg.invert_y) };
     let mapped: Vec<Vec<Vec2>> = use_strokes
         .iter()
         .map(|s| s.points.iter().map(|p| map(*p)).collect())
@@ -700,4 +699,3 @@ mod tests {
         assert!(idx_top < idx_bottom, "应先写上方那一笔");
     }
 }
-

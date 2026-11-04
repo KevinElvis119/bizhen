@@ -245,11 +245,17 @@ fn accumulate_line(
     origin: Vec2,
     with_strokes: bool,
     missing: &mut MissingSink,
+    mut sim: Option<&mut crate::sim::Simulator>,
 ) -> Vec<(CharPlacement, f64)> {
     let (ox, oy) = origin;
     let mut cand: Vec<(CharPlacement, f64)> = Vec::with_capacity(raw.len());
     let mut x = 0.0;
+    let mut prev_is_break = false;
     for ch in raw.iter().copied() {
+        let this_is_break =
+            ch.is_whitespace() || ch == ',' || ch == '.' || ch == '，' || ch == '。';
+        let prev_is_break_here = prev_is_break;
+        prev_is_break = this_is_break;
         let Some(fi) = pick_font(fonts, ch) else {
             // 字体链都画不出：先用内置单线符号补（Ω ± ≤ • …），补不上才留空
             if let Some((sym_adv, sym_strokes)) =
@@ -289,11 +295,32 @@ fn accumulate_line(
         }
         let Some(g) = font.glyph(ch) else { continue };
         let adv = g.advance * scale + style.char_spacing;
-        let strokes = if with_strokes {
+        let mut strokes = if with_strokes {
             g.to_strokes(scale, (ox + x, oy))
         } else {
             Vec::new()
         };
+        // 手写扰动：字符级变换 + 笔画级抖动（origin 即本字基线左端点）
+        if let Some(sim) = sim.as_deref_mut() {
+            if !strokes.is_empty() {
+                let is_first = cand.is_empty();
+                let is_word_start = prev_is_break_here;
+                let (dx, dy) = sim.char_offset(x, is_first, is_word_start);
+                let (size_factor, rot, shear) = sim.char_shape();
+                crate::sim::transform_char(
+                    &mut strokes,
+                    (ox + x, oy),
+                    size_factor,
+                    rot,
+                    shear,
+                    dx,
+                    dy,
+                );
+                for st in strokes.iter_mut() {
+                    sim.perturb_stroke(st);
+                }
+            }
+        }
         cand.push((
             CharPlacement {
                 ch,
@@ -365,7 +392,7 @@ pub fn layout_text(
 
     for raw_str in text.split('\n') {
         let raw: Vec<char> = raw_str.chars().collect();
-        let mut cand = accumulate_line(&raw, fonts, style, origin, true, &mut missing);
+        let mut cand = accumulate_line(&raw, fonts, style, origin, true, &mut missing, None);
         let groups: Vec<(usize, usize)> = if wrap_width > 0.0 && !cand.is_empty() {
             split_wrapped(&cand, &raw, wrap_width)
         } else {
@@ -443,13 +470,14 @@ pub fn append_text(
     baseline_y: f64,
     missing: &mut Vec<char>,
     missing_seen: &mut HashSet<char>,
+    sim: Option<&mut crate::sim::Simulator>,
 ) -> f64 {
     if text.is_empty() {
         return 0.0;
     }
     let raw: Vec<char> = text.chars().collect();
     let mut sink = MissingSink::new();
-    let cand = accumulate_line(&raw, fonts, style, (x, baseline_y), true, &mut sink);
+    let cand = accumulate_line(&raw, fonts, style, (x, baseline_y), true, &mut sink, sim);
     for ch in sink.out {
         if missing_seen.insert(ch) {
             missing.push(ch);

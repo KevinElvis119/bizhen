@@ -9,6 +9,10 @@ rust-version.workspace = true
 name = "bizhen-cli"
 path = "src/main.rs"
 
+[features]
+default = ["serial"]
+serial = ["bizhen-core/serial"]
+
 [dependencies]
 bizhen-core.workspace = true
 serde.workspace = true

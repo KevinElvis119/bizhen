@@ -944,4 +944,3 @@ fn draw_cjk_punct(ch: char, ox: f64, oy: f64, em: f64) -> Vec<Stroke> {
         _ => Vec::new(),
     }
 }
-

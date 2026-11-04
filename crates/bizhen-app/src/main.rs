@@ -19,6 +19,7 @@ use bizhen_core::font::FontRegistry;
 use bizhen_core::gcode::{self, GCodeConfig};
 use bizhen_core::markdown::{self, MarkdownStyle, PageSpec, RenderedDoc};
 use bizhen_core::serial::{self, PortInfo};
+use bizhen_core::sim::JitterParams;
 use bizhen_core::symbols::SymbolFonts;
 use bizhen_core::Stroke;
 
@@ -44,7 +45,16 @@ struct WriterApp {
     size_mm: f64,
     wrap: f64,
     page: PageSpec,
-    fonts: Vec<bizhen_core::font::FontFamily>,
+    /// 字体注册表（含内置与用户导入的 `.gfont`）
+    registry: FontRegistry,
+    /// 字体链（按优先级排列的注册表键）
+    font_names: Vec<String>,
+    /// 手写抖动参数
+    jitter: JitterParams,
+    /// 「字体与抖动」弹窗是否打开
+    dialog: bool,
+    /// 弹窗里字体列表的翻页
+    font_page: usize,
     symbols: SymbolFonts,
     doc: RenderedDoc,
     page_index: usize,
@@ -59,20 +69,23 @@ struct WriterApp {
 
 impl WriterApp {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let mut reg = FontRegistry::builtin();
-        let mut fonts = Vec::new();
-        if let Some(f) = reg.get("STRK-Kaiti") {
-            fonts.push(f.clone());
-        }
-        if let Some(f) = reg.get("futural") {
-            fonts.push(f.clone());
-        }
+        let registry = FontRegistry::builtin();
         let symbols = SymbolFonts::load();
         let page = PageSpec {
             width: PRESETS[0].1,
             height: PRESETS[0].2,
             margin: PRESETS[0].3,
         };
+        // 默认字体链：中文单线 + Hershey 拉丁
+        let mut font_names: Vec<String> = Vec::new();
+        for want in ["STRK-Kaiti", "futural"] {
+            if registry.get_entry(want).is_some() {
+                font_names.push(want.to_string());
+            }
+        }
+        if font_names.is_empty() {
+            font_names = registry.names().into_iter().take(1).collect();
+        }
         let mut app = Self {
             source: SAMPLE.to_string(),
             cursor: SAMPLE.chars().count(),
@@ -82,7 +95,11 @@ impl WriterApp {
             size_mm: 4.0,
             wrap: 160.0,
             page,
-            fonts,
+            registry,
+            font_names,
+            jitter: JitterParams::default(),
+            dialog: false,
+            font_page: 0,
             symbols,
             doc: RenderedDoc::default(),
             page_index: 0,
@@ -98,6 +115,18 @@ impl WriterApp {
         let handle = app.focus.clone();
         window.focus(&handle);
         app
+    }
+
+    /// 按字体链加载字体（懒加载，首次用到才解析）。
+    fn chain_fonts(&mut self) -> Vec<bizhen_core::font::FontFamily> {
+        let names = self.font_names.clone();
+        let mut out = Vec::new();
+        for n in names {
+            if let Some(f) = self.registry.get(&n) {
+                out.push(f.clone());
+            }
+        }
+        out
     }
 
     fn effective_page(&self) -> PageSpec {
@@ -118,18 +147,25 @@ impl WriterApp {
         let style = MarkdownStyle {
             size: self.size_mm,
             wrap_width: self.wrap.min(page.content_width()),
+            jitter: self.jitter.clone(),
             ..Default::default()
         };
-        self.doc =
-            markdown::render_markdown(&self.source, &self.fonts, &self.symbols, &style, page);
+        let fonts = self.chain_fonts();
+        self.doc = markdown::render_markdown(&self.source, &fonts, &self.symbols, &style, page);
         if self.page_index >= self.doc.pages.len() {
             self.page_index = self.doc.pages.len().saturating_sub(1);
         }
         let stroke_count: usize = self.doc.pages.iter().map(|p| p.strokes.len()).sum();
+        let jitter_note = if self.jitter.is_active() {
+            format!(" · 抖动×{:.1}", self.jitter.intensity)
+        } else {
+            String::new()
+        };
         self.status = format!(
-            "{} 页 · {} 笔画{}",
+            "{} 页 · {} 笔画{}{}",
             self.doc.pages.len(),
             stroke_count,
+            jitter_note,
             if self.doc.missing.is_empty() {
                 String::new()
             } else {
@@ -137,6 +173,30 @@ impl WriterApp {
             }
         )
         .into();
+    }
+
+    /// 导入字体：把选中的 `.gfont` / `.jhf` / `.json` 拷进用户字库目录并刷新。
+    fn import_font(&mut self) -> String {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("单线字体", &["gfont", "jhf", "json"])
+            .pick_file()
+        else {
+            return "已取消".into();
+        };
+        let dir = bizhen_core::font::registry::user_font_dir();
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            return format!("创建字库目录失败：{e}");
+        }
+        let Some(file_name) = path.file_name() else {
+            return "文件名无效".into();
+        };
+        let dest = dir.join(file_name);
+        if let Err(e) = std::fs::copy(&path, &dest) {
+            return format!("复制失败：{e}");
+        }
+        self.registry.refresh();
+        self.relayout();
+        format!("已导入 {}", file_name.to_string_lossy())
     }
 
     // -- 文本编辑 -----------------------------------------------------------
@@ -497,6 +557,10 @@ impl Render for WriterApp {
             .child(button("export", "导出 G-code", cx, |this, _w, cx| {
                 this.export_gcode();
                 cx.notify();
+            }))
+            .child(button("style", "字体与抖动", cx, |this, _w, cx| {
+                this.dialog = !this.dialog;
+                cx.notify();
             }));
 
         let footer = div()
@@ -575,103 +639,482 @@ impl Render for WriterApp {
         let page_h = page.height;
         let margin = page.margin;
 
-        div()
+        let mut root = div()
+            .relative()
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(0x1b1b1b))
-            .child(header)
-            .child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .min_h(px(0.))
-                    .child(
-                        div()
-                            .w(px(380.))
-                            .h_full()
-                            .overflow_hidden()
-                            .p_3()
-                            .border_r_1()
-                            .border_color(rgb(0x333333))
-                            .track_focus(&focus)
-                            .on_key_down(cx.listener(Self::on_key))
-                            .child(editor),
-                    )
-                    .child(
-                        div().flex_1().h_full().p_4().child(
-                            canvas(
-                                move |_, _, _| {},
-                                move |bounds, _state, window, _cx| {
-                                    let avail_w = f32::from(bounds.size.width) - 8.0;
-                                    let avail_h = f32::from(bounds.size.height) - 8.0;
-                                    let scale = ((avail_w / page_w as f32)
-                                        .min(avail_h / page_h as f32))
-                                    .max(0.05)
-                                        * zoom;
-                                    let paper_w = page_w as f32 * scale;
-                                    let paper_h = page_h as f32 * scale;
-                                    let ox = f32::from(bounds.origin.x) + (avail_w - paper_w) / 2.0;
-                                    let oy = f32::from(bounds.origin.y) + (avail_h - paper_h) / 2.0;
+            .bg(rgb(0x1b1b1b));
+        root = root.child(header);
+        root = root.child(
+            div()
+                .flex()
+                .flex_1()
+                .min_h(px(0.))
+                .child(
+                    div()
+                        .w(px(380.))
+                        .h_full()
+                        .overflow_hidden()
+                        .p_3()
+                        .border_r_1()
+                        .border_color(rgb(0x333333))
+                        .track_focus(&focus)
+                        .on_key_down(cx.listener(Self::on_key))
+                        .child(editor),
+                )
+                .child(
+                    div().flex_1().h_full().p_4().child(
+                        canvas(
+                            move |_, _, _| {},
+                            move |bounds, _state, window, _cx| {
+                                let avail_w = f32::from(bounds.size.width) - 8.0;
+                                let avail_h = f32::from(bounds.size.height) - 8.0;
+                                let scale = ((avail_w / page_w as f32)
+                                    .min(avail_h / page_h as f32))
+                                .max(0.05)
+                                    * zoom;
+                                let paper_w = page_w as f32 * scale;
+                                let paper_h = page_h as f32 * scale;
+                                let ox = f32::from(bounds.origin.x) + (avail_w - paper_w) / 2.0;
+                                let oy = f32::from(bounds.origin.y) + (avail_h - paper_h) / 2.0;
 
-                                    // 纸张
-                                    window.paint_quad(quad(
-                                        Bounds {
-                                            origin: point(px(ox), px(oy)),
-                                            size: size(px(paper_w), px(paper_h)),
-                                        },
-                                        px(0.),
-                                        gpui::white(),
-                                        px(1.),
-                                        rgb(0x666666),
-                                        Default::default(),
-                                    ));
+                                // 纸张
+                                window.paint_quad(quad(
+                                    Bounds {
+                                        origin: point(px(ox), px(oy)),
+                                        size: size(px(paper_w), px(paper_h)),
+                                    },
+                                    px(0.),
+                                    gpui::white(),
+                                    px(1.),
+                                    rgb(0x666666),
+                                    Default::default(),
+                                ));
 
-                                    // 页边距参考线
-                                    let m = margin as f32 * scale;
-                                    window.paint_quad(quad(
-                                        Bounds {
-                                            origin: point(px(ox + m), px(oy + m)),
-                                            size: size(
-                                                px(paper_w - 2.0 * m),
-                                                px(paper_h - 2.0 * m),
-                                            ),
-                                        },
-                                        px(0.),
-                                        gpui::transparent_black(),
-                                        px(0.5),
-                                        rgb(0xdddddd),
-                                        Default::default(),
-                                    ));
+                                // 页边距参考线
+                                let m = margin as f32 * scale;
+                                window.paint_quad(quad(
+                                    Bounds {
+                                        origin: point(px(ox + m), px(oy + m)),
+                                        size: size(px(paper_w - 2.0 * m), px(paper_h - 2.0 * m)),
+                                    },
+                                    px(0.),
+                                    gpui::transparent_black(),
+                                    px(0.5),
+                                    rgb(0xdddddd),
+                                    Default::default(),
+                                ));
 
-                                    // 笔画
-                                    let line_width = (0.35_f64 * scale as f64).max(0.9) as f32;
-                                    for stroke in &current {
-                                        if stroke.points.len() < 2 {
-                                            continue;
-                                        }
-                                        let mut builder = PathBuilder::stroke(px(line_width));
-                                        for (i, p) in stroke.points.iter().enumerate() {
-                                            let x = ox + p.0 as f32 * scale;
-                                            let y = oy + (page_h - p.1) as f32 * scale;
-                                            if i == 0 {
-                                                builder.move_to(point(px(x), px(y)));
-                                            } else {
-                                                builder.line_to(point(px(x), px(y)));
-                                            }
-                                        }
-                                        if let Ok(path) = builder.build() {
-                                            window.paint_path(path, rgb(0x111111));
+                                // 笔画
+                                let line_width = (0.35_f64 * scale as f64).max(0.9) as f32;
+                                for stroke in &current {
+                                    if stroke.points.len() < 2 {
+                                        continue;
+                                    }
+                                    let mut builder = PathBuilder::stroke(px(line_width));
+                                    for (i, p) in stroke.points.iter().enumerate() {
+                                        let x = ox + p.0 as f32 * scale;
+                                        let y = oy + (page_h - p.1) as f32 * scale;
+                                        if i == 0 {
+                                            builder.move_to(point(px(x), px(y)));
+                                        } else {
+                                            builder.line_to(point(px(x), px(y)));
                                         }
                                     }
-                                },
-                            )
-                            .size_full(),
-                        ),
+                                    if let Ok(path) = builder.build() {
+                                        window.paint_path(path, rgb(0x111111));
+                                    }
+                                }
+                            },
+                        )
+                        .size_full(),
                     ),
-            )
-            .child(footer)
+                ),
+        );
+        root = root.child(footer);
+        if self.dialog {
+            let entries: Vec<(String, String, String)> = self
+                .registry
+                .entries()
+                .iter()
+                .map(|e| (e.name.clone(), e.display.clone(), e.kind.to_string()))
+                .collect();
+            let chain = self.font_names.clone();
+            let jitter = self.jitter.clone();
+            let font_page = self.font_page;
+            root = root.child(build_dialog(&chain, &entries, font_page, &jitter, cx));
+        }
+        root
     }
+}
+
+/// 一行参数：标签 + 「−」按钮 + 当前值 + 「＋」按钮。
+fn param_row(
+    label: &str,
+    value: String,
+    id: &str,
+    cx: &mut Context<WriterApp>,
+    dec: impl Fn(&mut WriterApp) + 'static,
+    inc: impl Fn(&mut WriterApp) + 'static,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(
+            div()
+                .w(px(150.))
+                .text_xs()
+                .text_color(rgb(0xb0b0b0))
+                .child(label.to_string()),
+        )
+        .child(button(
+            &format!("{id}_dec"),
+            "−",
+            cx,
+            move |this, _w, cx| {
+                dec(this);
+                this.relayout();
+                cx.notify();
+            },
+        ))
+        .child(
+            div()
+                .w(px(64.))
+                .text_xs()
+                .text_color(rgb(0xffffff))
+                .child(value),
+        )
+        .child(button(
+            &format!("{id}_inc"),
+            "＋",
+            cx,
+            move |this, _w, cx| {
+                inc(this);
+                this.relayout();
+                cx.notify();
+            },
+        ))
+}
+
+/// 「字体与手写抖动」弹窗。
+fn build_dialog(
+    chain: &[String],
+    entries: &[(String, String, String)],
+    page: usize,
+    jitter: &JitterParams,
+    cx: &mut Context<WriterApp>,
+) -> impl IntoElement {
+    const PER_PAGE: usize = 12;
+    let total = entries.len();
+    let pages = total.div_ceil(PER_PAGE).max(1);
+    let page = page.min(pages - 1);
+    let start = page * PER_PAGE;
+    let end = (start + PER_PAGE).min(total);
+
+    let display_of = |name: &str| {
+        entries
+            .iter()
+            .find(|(n, _, _)| n == name)
+            .map(|(_, d, _)| d.clone())
+            .unwrap_or_else(|| name.to_string())
+    };
+
+    // 字体链
+    let mut chips = div().flex().flex_wrap().gap_1();
+    if chain.is_empty() {
+        chips = chips.child(
+            div()
+                .text_xs()
+                .text_color(rgb(0xff8888))
+                .child("字体链为空，选一款字体"),
+        );
+    }
+    for (i, name) in chain.iter().enumerate() {
+        let up = name.clone();
+        let del = name.clone();
+        chips = chips.child(
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .px_1()
+                .rounded_md()
+                .bg(rgb(0x3a3a3a))
+                .child(div().text_xs().text_color(rgb(0xe8e8e8)).child(format!(
+                    "{}. {}",
+                    i + 1,
+                    display_of(name)
+                )))
+                .child(button(
+                    &format!("up_{i}"),
+                    "↑",
+                    cx,
+                    move |this, _w, cx| {
+                        if let Some(pos) = this.font_names.iter().position(|c| c == &up) {
+                            if pos > 0 {
+                                this.font_names.swap(pos - 1, pos);
+                            }
+                        }
+                        this.relayout();
+                        cx.notify();
+                    },
+                ))
+                .child(button(
+                    &format!("del_{i}"),
+                    "×",
+                    cx,
+                    move |this, _w, cx| {
+                        if this.font_names.len() <= 1 {
+                            return;
+                        }
+                        if let Some(pos) = this.font_names.iter().position(|c| c == &del) {
+                            this.font_names.remove(pos);
+                        }
+                        this.relayout();
+                        cx.notify();
+                    },
+                )),
+        );
+    }
+
+    // 可加入的字体（分页）
+    let mut font_grid = div().flex().flex_wrap().gap_1();
+    for (name, display, kind) in &entries[start..end] {
+        let chosen = chain.iter().any(|c| c == name);
+        let label = if chosen {
+            format!("✓ {display}")
+        } else {
+            format!("+ {display}")
+        };
+        let n = name.clone();
+        let tip = match kind.as_str() {
+            "gfont" => "gfont",
+            "stroke-json" => "中文单线",
+            _ => "Hershey",
+        };
+        font_grid = font_grid.child(
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(button(
+                    &format!("pick_{name}"),
+                    label,
+                    cx,
+                    move |this, _w, cx| {
+                        if let Some(pos) = this.font_names.iter().position(|c| c == &n) {
+                            this.font_names.remove(pos);
+                        } else {
+                            this.font_names.push(n.clone());
+                        }
+                        this.relayout();
+                        cx.notify();
+                    },
+                ))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(0x777777))
+                        .child(tip.to_string()),
+                ),
+        );
+    }
+
+    let page_row = div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(button("font_prev", "◀", cx, |this, _w, cx| {
+            this.font_page = this.font_page.saturating_sub(1);
+            cx.notify();
+        }))
+        .child(div().text_xs().text_color(rgb(0x999999)).child(format!(
+            "字体 {}/{}（共 {} 款）",
+            page + 1,
+            pages,
+            total
+        )))
+        .child(button("font_next", "▶", cx, |this, _w, cx| {
+            this.font_page += 1;
+            cx.notify();
+        }))
+        .child(button(
+            "import_font",
+            "导入字体…",
+            cx,
+            |this, _w, cx| {
+                this.status = this.import_font().into();
+                cx.notify();
+            },
+        ));
+
+    // 抖动预设
+    let preset_row = div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(
+            div()
+                .w(px(60.))
+                .text_xs()
+                .text_color(rgb(0xb0b0b0))
+                .child("预设"),
+        )
+        .child(button("j_off", "关闭", cx, |this, _w, cx| {
+            this.jitter = JitterParams::default();
+            this.relayout();
+            cx.notify();
+        }))
+        .child(button("j_subtle", "轻微", cx, |this, _w, cx| {
+            this.jitter = JitterParams::subtle(this.size_mm);
+            this.relayout();
+            cx.notify();
+        }))
+        .child(button("j_natural", "自然", cx, |this, _w, cx| {
+            this.jitter = JitterParams::natural(this.size_mm);
+            this.relayout();
+            cx.notify();
+        }))
+        .child(button("j_strong", "强烈", cx, |this, _w, cx| {
+            this.jitter = JitterParams::strong(this.size_mm);
+            this.relayout();
+            cx.notify();
+        }))
+        .child(button(
+            "j_reroll",
+            "换一套（重摇种子）",
+            cx,
+            |this, _w, cx| {
+                this.jitter.seed = this.jitter.seed.wrapping_add(1);
+                this.relayout();
+                cx.notify();
+            },
+        ));
+
+    let mut rows = div().flex().flex_col().gap_1();
+    rows = rows
+        .child(param_row(
+            "强度",
+            format!("{:.2}", jitter.intensity),
+            "ji",
+            cx,
+            |a| a.jitter.intensity = (a.jitter.intensity - 0.1).max(0.1),
+            |a| a.jitter.intensity = (a.jitter.intensity + 0.1).min(5.0),
+        ))
+        .child(param_row(
+            "字号波动 σ",
+            format!("{:.3}", jitter.size_sigma),
+            "js",
+            cx,
+            |a| a.jitter.size_sigma = (a.jitter.size_sigma - 0.01).max(0.0),
+            |a| a.jitter.size_sigma = (a.jitter.size_sigma + 0.01).min(0.5),
+        ))
+        .child(param_row(
+            "字符位移 σ(mm)",
+            format!("{:.2}", jitter.char_x_sigma),
+            "jx",
+            cx,
+            |a| {
+                a.jitter.char_x_sigma = (a.jitter.char_x_sigma - 0.05).max(0.0);
+                a.jitter.char_y_sigma = (a.jitter.char_y_sigma - 0.04).max(0.0);
+            },
+            |a| {
+                a.jitter.char_x_sigma = (a.jitter.char_x_sigma + 0.05).min(3.0);
+                a.jitter.char_y_sigma = (a.jitter.char_y_sigma + 0.04).min(3.0);
+            },
+        ))
+        .child(param_row(
+            "字符旋转 σ(°)",
+            format!("{:.1}", jitter.char_rot_sigma),
+            "jr",
+            cx,
+            |a| a.jitter.char_rot_sigma = (a.jitter.char_rot_sigma - 0.2).max(0.0),
+            |a| a.jitter.char_rot_sigma = (a.jitter.char_rot_sigma + 0.2).min(15.0),
+        ))
+        .child(param_row(
+            "行基线 σ(mm)",
+            format!("{:.2}", jitter.line_y_sigma),
+            "jy",
+            cx,
+            |a| a.jitter.line_y_sigma = (a.jitter.line_y_sigma - 0.05).max(0.0),
+            |a| a.jitter.line_y_sigma = (a.jitter.line_y_sigma + 0.05).min(3.0),
+        ))
+        .child(param_row(
+            "行斜 σ(mm)",
+            format!("{:.2}", jitter.line_tilt_sigma),
+            "jt",
+            cx,
+            |a| a.jitter.line_tilt_sigma = (a.jitter.line_tilt_sigma - 0.05).max(0.0),
+            |a| a.jitter.line_tilt_sigma = (a.jitter.line_tilt_sigma + 0.05).min(4.0),
+        ))
+        .child(param_row(
+            "笔画旋转 σ(°)",
+            format!("{:.1}", jitter.stroke_theta_sigma),
+            "jst",
+            cx,
+            |a| a.jitter.stroke_theta_sigma = (a.jitter.stroke_theta_sigma - 0.5).max(0.0),
+            |a| a.jitter.stroke_theta_sigma = (a.jitter.stroke_theta_sigma + 0.5).min(20.0),
+        ))
+        .child(param_row(
+            "笔画修剪(mm)",
+            format!("{:.2}", jitter.stroke_trim_mm),
+            "jtr",
+            cx,
+            |a| a.jitter.stroke_trim_mm = (a.jitter.stroke_trim_mm - 0.01).max(0.0),
+            |a| a.jitter.stroke_trim_mm = (a.jitter.stroke_trim_mm + 0.01).min(1.0),
+        ))
+        .child(param_row(
+            "结构线起伏(mm)",
+            format!("{:.2}", jitter.line_wobble),
+            "jw",
+            cx,
+            |a| a.jitter.line_wobble = (a.jitter.line_wobble - 0.05).max(0.0),
+            |a| a.jitter.line_wobble = (a.jitter.line_wobble + 0.05).min(2.0),
+        ));
+
+    div()
+        .absolute()
+        .top(px(56.))
+        .right(px(12.))
+        .w(px(620.))
+        .bg(rgb(0x2b2b2b))
+        .border_1()
+        .border_color(rgb(0x555555))
+        .rounded_lg()
+        .p_3()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .child(
+                    div()
+                        .flex_1()
+                        .text_sm()
+                        .text_color(rgb(0xffffff))
+                        .child("字体与手写抖动"),
+                )
+                .child(button("dlg_close", "关闭", cx, |this, _w, cx| {
+                    this.dialog = false;
+                    cx.notify();
+                })),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(rgb(0x999999))
+                .child("字体链按优先级匹配：靠前者负责绘制它能画的字符"),
+        )
+        .child(chips)
+        .child(font_grid)
+        .child(page_row)
+        .child(div().h(px(1.)).bg(rgb(0x444444)))
+        .child(preset_row)
+        .child(rows)
 }
 
 fn main() {
@@ -693,4 +1136,3 @@ fn main() {
         cx.activate(true);
     });
 }
-

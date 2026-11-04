@@ -14,3 +14,6 @@ Thumbs.db
 /tests/*.svg
 /tests/*.gcode
 /target/app.*.txt
+
+# 本地实测用的 .gfont 样本（很大，不入库）
+/tests/gfonts/

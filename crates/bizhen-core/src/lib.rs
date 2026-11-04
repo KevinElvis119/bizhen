@@ -14,7 +14,11 @@
 //! * [`serial`]              GRBL 串口联机
 //! * [`render`]              SVG 预览导出
 
-#![allow(clippy::needless_range_loop, clippy::too_many_arguments, clippy::type_complexity)]
+#![allow(
+    clippy::needless_range_loop,
+    clippy::too_many_arguments,
+    clippy::type_complexity
+)]
 
 pub mod font;
 pub mod gcode;
@@ -25,6 +29,7 @@ pub mod math;
 pub mod render;
 #[cfg(feature = "serial")]
 pub mod serial;
+pub mod sim;
 pub mod stroke;
 pub mod symbols;
 
@@ -37,4 +42,3 @@ pub use layout::{
     CharPlacement, LineLayout, TextLayout, TextStyle,
 };
 pub use stroke::{Role, Stroke};
-

@@ -50,6 +50,8 @@ pub struct MarkdownStyle {
     pub list_indent: f64,
     pub quote_indent: f64,
     pub math_size_scale: f64,
+    /// 手写随机扰动（默认关闭）
+    pub jitter: crate::sim::JitterParams,
 }
 
 impl Default for MarkdownStyle {
@@ -69,6 +71,7 @@ impl Default for MarkdownStyle {
             list_indent: 6.0,
             quote_indent: 6.0,
             math_size_scale: 1.0,
+            jitter: crate::sim::JitterParams::default(),
         }
     }
 }
@@ -603,6 +606,7 @@ struct Renderer<'a> {
     tables: Vec<(f64, f64, f64, f64)>,
     table_n: usize,
     wrap_width: f64,
+    sim: Option<crate::sim::Simulator>,
 }
 
 impl<'a> Renderer<'a> {
@@ -630,6 +634,11 @@ impl<'a> Renderer<'a> {
             tables: Vec::new(),
             table_n: 0,
             wrap_width,
+            sim: if style.jitter.is_active() {
+                Some(crate::sim::Simulator::new(&style.jitter))
+            } else {
+                None
+            },
         }
     }
 
@@ -672,6 +681,13 @@ impl<'a> Renderer<'a> {
         if self.y - need < self.bottom() - 1e-9 && self.page_has_content() {
             self.pages.push(Vec::new());
             self.y = self.top();
+        }
+    }
+
+    /// 开始一行（重抽行级扰动参数）。width 用于摊开行尾落差。
+    fn begin_sim_line(&mut self, width: f64) {
+        if let Some(sim) = self.sim.as_mut() {
+            sim.begin_line(width);
         }
     }
 
@@ -739,6 +755,7 @@ impl<'a> Renderer<'a> {
                         baseline,
                         &mut self.missing,
                         &mut self.missing_seen,
+                        self.sim.as_mut(),
                     );
                     self.cur().extend(strokes);
                     x += w;
@@ -772,6 +789,9 @@ impl<'a> Renderer<'a> {
     fn emit_line(&mut self, segs: &[Seg], size: f64, indent: f64, align: Align) {
         let lh = self.lh(size);
         self.ensure(lh);
+        // 手写扰动：每行重新抽行级参数（行基线 / 行首偏移 / 行尾落差）
+        let line_w = self.segment_width(segs, size);
+        self.begin_sim_line(line_w);
         let baseline = self.y - size;
         let x = self.left() + indent;
         let avail = self.wrap_width - indent;
@@ -885,6 +905,7 @@ impl<'a> Renderer<'a> {
                 baseline,
                 &mut self.missing,
                 &mut self.missing_seen,
+                self.sim.as_mut(),
             );
             self.cur().extend(strokes);
             let avail = (self.wrap_width - ind).max(size * 0.5);
@@ -894,6 +915,8 @@ impl<'a> Renderer<'a> {
                 if k > 0 {
                     self.ensure(lh);
                 }
+                let line_w = self.segment_width(line, size);
+                self.begin_sim_line(line_w);
                 self.draw_segments(line, size, self.left() + ind, y, Align::Left, avail);
             }
             let consumed = lines.len().max(1) as f64;
@@ -1283,7 +1306,7 @@ impl<'a> Renderer<'a> {
                 };
                 let seg = clip(line[0], line[1], (x0 - left) / span_x, (x1 - left) / span_x);
                 self.cur()
-                    .push(Stroke::new(vec![seg[0], seg[1]], false, Role::Structure));
+                    .push(Stroke::new(vec![seg[0], seg[1]], false, Role::TableLine));
                 for c in cs..=ce {
                     hsegs.insert((i, c), (seg[0], seg[1]));
                 }
@@ -1328,7 +1351,7 @@ impl<'a> Renderer<'a> {
                     (ys[0] - ys[re + 1]) / span_y,
                 );
                 self.cur()
-                    .push(Stroke::new(vec![seg[0], seg[1]], false, Role::Structure));
+                    .push(Stroke::new(vec![seg[0], seg[1]], false, Role::TableLine));
             }
         }
 
@@ -1379,6 +1402,7 @@ impl<'a> Renderer<'a> {
                                 base,
                                 &mut self.missing,
                                 &mut self.missing_seen,
+                                None, // 表格内不做手写抖动，保证对齐
                             );
                             self.cur().extend(strokes);
                             xx += w;
@@ -1544,6 +1568,12 @@ pub fn render_markdown(
     while r.pages.len() > 1 && r.pages.last().map(|p| p.is_empty()).unwrap_or(false) {
         r.pages.pop();
     }
+    // 手写扰动：结构线（表格线/分割线/引用竖线）只加沿线起伏，不做整体位移
+    if style.jitter.is_active() {
+        for strokes in &mut r.pages {
+            crate::sim::wobble_structural_strokes(strokes, &style.jitter);
+        }
+    }
     RenderedDoc {
         pages: r
             .pages
@@ -1637,4 +1667,3 @@ mod tests {
         assert!(!doc.strokes().is_empty());
     }
 }
-

@@ -19,6 +19,8 @@ use crate::stroke::{Role, Stroke};
 pub enum FontKind {
     Hershey,
     StrokeJson,
+    /// kvenjoy `.gfont` 单线字体包（ZIP + 加密头）
+    Gfont,
 }
 
 impl FontKind {
@@ -26,6 +28,7 @@ impl FontKind {
         match self {
             FontKind::Hershey => "hershey",
             FontKind::StrokeJson => "stroke-json",
+            FontKind::Gfont => "gfont",
         }
     }
 }
