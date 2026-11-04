@@ -99,12 +99,15 @@ impl FontRegistry {
         self.entries.get(name)
     }
 
-    /// 取（并缓存解析结果）一款字体。`stroke-json` 目前返回 `None`。
+    /// 取（并缓存解析结果）一款字体；首次访问才解析（中文字库 8.4 MB，务必懒加载）。
     pub fn get(&mut self, name: &str) -> Option<&FontFamily> {
         if !self.loaded.contains_key(name) {
             let entry = self.entries.get(name)?.clone();
             let fam = match entry.kind {
                 "hershey" => parse_hershey_jhf(&entry.path, Some(&entry.name)).ok(),
+                "stroke-json" => {
+                    crate::font::stroke_json::parse_stroke_json(&entry.path, Some(&entry.name)).ok()
+                }
                 _ => None,
             }?;
             self.loaded.insert(name.to_string(), fam);

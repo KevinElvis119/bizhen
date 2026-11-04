@@ -4,21 +4,36 @@
 //! 按行宽自动折行、字体与度量对齐），并新增**分页**；去掉笔画编辑、扰动、
 //! TikZ、SVG、MCP 等外围功能。
 //!
-//! 模块规划见 `docs/DEVELOPMENT_PLAN.md`：
-//! * [`geom`] / [`stroke`]      几何与笔画模型
-//! * [`font`]                   字库解析、度量、回退链
-//! * `layout`（M2）             文本排版与折行
-//! * `markdown`（M2/M3）        Markdown → 笔画
-//! * `math`（M3）               LaTeX 公式 → 笔画（自研排版引擎）
-//! * `paginate`（M3）           分页流
-//! * `gcode`（M4）              笔画 → G-code
+//! 模块：
+//! * [`geom`] / [`stroke`]   几何与笔画模型
+//! * [`font`]                字库解析（`.jhf` / `STRK-*.json`）、度量、回退链
+//! * [`layout`]              文本排版与折行
+//! * [`markdown`]            Markdown → 分页笔画
+//! * [`math`] / [`symbols`]  LaTeX 公式排版（自研，替代 matplotlib mathtext）
+//! * [`gcode`]               笔画 → G-code
+//! * [`serial`]              GRBL 串口联机
+//! * [`render`]              SVG 预览导出
+
+#![allow(clippy::needless_range_loop, clippy::too_many_arguments, clippy::type_complexity)]
 
 pub mod font;
+pub mod gcode;
 pub mod geom;
+pub mod layout;
+pub mod markdown;
+pub mod math;
+pub mod render;
+pub mod serial;
 pub mod stroke;
+pub mod symbols;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub use font::registry::fonts_dir;
 pub use geom::{rdp_simplify, BBox, Vec2};
+pub use layout::{
+    append_text, layout_text, measure_text, pick_font, widest_char_width, wrap_text, Align,
+    CharPlacement, LineLayout, TextLayout, TextStyle,
+};
 pub use stroke::{Role, Stroke};
+

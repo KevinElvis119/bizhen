@@ -7,3 +7,10 @@
 Thumbs.db
 *.log
 /out
+
+# 样例文档进版本库，生成的导出物不进
+/tests/*.json
+/tests/*.png
+/tests/*.svg
+/tests/*.gcode
+/target/app.*.txt

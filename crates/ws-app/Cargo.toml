@@ -11,7 +11,5 @@ path = "src/main.rs"
 
 [dependencies]
 ws-core.workspace = true
-
-# M4 再接 gpui（0.2.x，crates.io 已发布，无需挂 zed git 依赖）：
-# gpui = "0.2"
-# gpui-component = "0.9"   # 可选：现成控件库，减少自绘工作
+gpui = "0.2"
+rfd = "0.17.2"

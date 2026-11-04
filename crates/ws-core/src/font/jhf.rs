@@ -28,6 +28,8 @@ pub enum FontError {
     Io(#[from] std::io::Error),
     #[error("未能从 {0} 解析出任何字形")]
     NoGlyphs(String),
+    #[error("{0}")]
+    Parse(String),
 }
 
 /// 原始 int 单位的笔画集合（每笔一串点）。
