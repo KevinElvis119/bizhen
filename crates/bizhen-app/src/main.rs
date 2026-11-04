@@ -14,10 +14,10 @@
 mod machine;
 
 use gpui::{
-    canvas, div, point, prelude::*, px, quad, rgb, size, App, Bounds, ContentMask, Context,
-    KeyDownEvent, PathBuilder, Render, ScrollDelta, ScrollEvent, SharedString, Window,
-    WindowBounds, WindowOptions,
+    canvas, div, point, prelude::*, px, quad, rgb, size, App, Bounds, ContentMask, Context, Entity,
+    PathBuilder, Render, SharedString, Subscription, Window, WindowBounds, WindowOptions,
 };
+use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 
 use bizhen_core::font::FontRegistry;
 use bizhen_core::gcode::{self, GCodeConfig};
@@ -41,10 +41,8 @@ const PRESETS: &[(&str, f64, f64, f64)] = &[
 
 const BAUDS: &[u32] = &[9600, 19200, 38400, 57600, 115200, 250000];
 
-/// 编辑器一行的高度（px），滚轮与光标跟随都用它换算
-const LINE_H: f32 = 18.0;
-/// 编辑器可见行数（估算，用于光标跟随时保底）
-const EDITOR_VISIBLE_LINES: usize = 26;
+/// 编辑器字号（pt）
+const EDITOR_TEXT_SIZE: f32 = 13.0;
 
 const SAMPLE: &str = "# 静夜思\n\n床前明月光 疑是地上霜\n举头望明月 低头思故乡\n\n## 公式\n\n质能方程 $E = mc^2$，行内公式随正文重排。\n\n## 表格\n\n| 项目 | 数量 | 备注 |\n|:---|---:|:---:|\n| 笔 | 2 | 黑色 |\n| 纸 | 10 | A4 |\n\n![示意图](none.png){width=60,height=30}\n";
 
@@ -56,10 +54,9 @@ enum Tab {
 
 struct WriterApp {
     source: String,
-    /// 光标位置（按字符计）
-    cursor: usize,
-    /// 编辑器滚动偏移（px）
-    editor_scroll: f32,
+    /// Kit 的多行输入状态：自带输入法组合、选区、撤销、鼠标定位
+    editor: Entity<TextareaState>,
+    _editor_sub: Option<Subscription>,
     tab: Tab,
 
     preset: usize,
@@ -94,8 +91,6 @@ struct WriterApp {
     poll_frames: u32,
     /// 是否已经挂了 on_next_frame 链，避免重复挂
     ticking: bool,
-
-    focus: gpui::FocusHandle,
 }
 
 impl WriterApp {
@@ -116,17 +111,15 @@ impl WriterApp {
         if font_names.is_empty() {
             font_names = registry.names().into_iter().take(1).collect();
         }
+        let source = std::env::var("BIZHEN_DEMO_SOURCE")
+            .ok()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_else(|| SAMPLE.to_string());
+        let editor = cx.new(|cx| TextareaState::new(window, cx).default_value(source.clone()));
         let mut app = Self {
-            source: std::env::var("BIZHEN_DEMO_SOURCE")
-                .ok()
-                .and_then(|p| std::fs::read_to_string(p).ok())
-                .unwrap_or_else(|| SAMPLE.to_string()),
-            cursor: 0,
-            // 冒烟/演示：BIZHEN_DEMO_SCROLL=px 指定初始滚动位置
-            editor_scroll: std::env::var("BIZHEN_DEMO_SCROLL")
-                .ok()
-                .and_then(|v| v.parse::<f32>().ok())
-                .unwrap_or(0.0),
+            source,
+            editor,
+            _editor_sub: None,
             // 冒烟/演示：BIZHEN_DEMO_TAB=page 启动即显示「页面」标签
             tab: if std::env::var("BIZHEN_DEMO_TAB").as_deref() == Ok("page") {
                 Tab::Page
@@ -164,9 +157,18 @@ impl WriterApp {
             jog_feed: 2500.0,
             poll_frames: 0,
             ticking: false,
-            focus: cx.focus_handle(),
         };
-        app.cursor = app.source.chars().count();
+        // 编辑内容变化 → 重排预览
+        app._editor_sub = Some(cx.subscribe(
+            &app.editor,
+            |this: &mut WriterApp, editor, ev: &InputEvent, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    this.source = editor.read(cx).value().to_string();
+                    this.relayout();
+                    cx.notify();
+                }
+            },
+        ));
         app.relayout();
         // 冒烟/演示：BIZHEN_DEMO_CONNECT=1 启动即连接第一个串口
         if std::env::var("BIZHEN_DEMO_CONNECT").is_ok() {
@@ -178,8 +180,6 @@ impl WriterApp {
                 app.poke();
             }
         }
-        let handle = app.focus.clone();
-        window.focus(&handle, cx);
         app
     }
 
@@ -258,173 +258,18 @@ impl WriterApp {
         format!("已导入 {}", file_name.to_string_lossy())
     }
 
-    // -- 文本编辑 -----------------------------------------------------------
-    fn byte_of_char(&self, char_idx: usize) -> usize {
-        self.source
-            .char_indices()
-            .nth(char_idx)
-            .map(|(b, _)| b)
-            .unwrap_or(self.source.len())
-    }
-
-    fn insert(&mut self, text: &str) {
-        let b = self.byte_of_char(self.cursor);
-        self.source.insert_str(b, text);
-        self.cursor += text.chars().count();
-    }
-
-    fn backspace(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        let end = self.byte_of_char(self.cursor);
-        let start = self.byte_of_char(self.cursor - 1);
-        self.source.replace_range(start..end, "");
-        self.cursor -= 1;
-    }
-
-    fn delete(&mut self) {
-        if self.cursor >= self.source.chars().count() {
-            return;
-        }
-        let start = self.byte_of_char(self.cursor);
-        let end = self.byte_of_char(self.cursor + 1);
-        self.source.replace_range(start..end, "");
-    }
-
-    fn cursor_line_col(&self) -> (usize, usize) {
-        let mut line = 0;
-        let mut col = 0;
-        for (i, ch) in self.source.chars().enumerate() {
-            if i >= self.cursor {
-                break;
-            }
-            if ch == '\n' {
-                line += 1;
-                col = 0;
-            } else {
-                col += 1;
-            }
-        }
-        (line, col)
-    }
-
-    fn move_vertical(&mut self, down: bool) {
-        let lines: Vec<&str> = self.source.split('\n').collect();
-        let (line, col) = self.cursor_line_col();
-        let target = if down {
-            if line + 1 >= lines.len() {
-                return;
-            }
-            line + 1
-        } else {
-            if line == 0 {
-                return;
-            }
-            line - 1
-        };
-        let target_len = lines[target].chars().count();
-        let offset: usize = lines[..target].iter().map(|l| l.chars().count() + 1).sum();
-        self.cursor = offset + col.min(target_len);
-    }
-
-    /// 让光标所在行保持在可视范围内。
-    fn follow_cursor(&mut self) {
-        let (line, _) = self.cursor_line_col();
-        let first = (self.editor_scroll / LINE_H) as usize;
-        if line < first {
-            self.editor_scroll = line as f32 * LINE_H;
-        } else if line >= first + EDITOR_VISIBLE_LINES {
-            self.editor_scroll = (line + 1 - EDITOR_VISIBLE_LINES) as f32 * LINE_H;
-        }
-    }
-
-    fn on_key(&mut self, ev: &KeyDownEvent, _w: &mut Window, cx: &mut Context<Self>) {
-        let ks = &ev.keystroke;
-        let mut changed = false;
-        match ks.key.as_str() {
-            "backspace" => {
-                self.backspace();
-                changed = true;
-            }
-            "delete" => {
-                self.delete();
-                changed = true;
-            }
-            "left" => self.cursor = self.cursor.saturating_sub(1),
-            "right" => {
-                if self.cursor < self.source.chars().count() {
-                    self.cursor += 1;
-                }
-            }
-            "up" => self.move_vertical(false),
-            "down" => self.move_vertical(true),
-            "home" => {
-                let (line, _) = self.cursor_line_col();
-                let offset: usize = self
-                    .source
-                    .split('\n')
-                    .take(line)
-                    .map(|l| l.chars().count() + 1)
-                    .sum();
-                self.cursor = offset;
-            }
-            "end" => {
-                let lines: Vec<&str> = self.source.split('\n').collect();
-                let (line, _) = self.cursor_line_col();
-                let offset: usize = lines[..line].iter().map(|l| l.chars().count() + 1).sum();
-                self.cursor = offset + lines[line].chars().count();
-            }
-            "enter" => {
-                self.insert("\n");
-                changed = true;
-            }
-            "v" if ks.modifiers.control => {
-                if let Some(item) = cx.read_from_clipboard() {
-                    if let Some(text) = item.text() {
-                        self.insert(&text);
-                        changed = true;
-                    }
-                }
-            }
-            _ => {
-                if let Some(ch) = ks.key_char.as_deref() {
-                    if !ks.modifiers.control && !ch.is_empty() {
-                        self.insert(ch);
-                        changed = true;
-                    }
-                }
-            }
-        }
-        if changed {
-            self.relayout();
-        }
-        self.follow_cursor();
-        cx.notify();
-    }
-
-    fn on_wheel(&mut self, ev: &ScrollEvent, _w: &mut Window, cx: &mut Context<Self>) {
-        let lines = self.source.split('\n').count() as f32;
-        let max = ((lines - 1.0) * LINE_H).max(0.0);
-        let dy = match ev.delta {
-            ScrollDelta::Lines(p) => p.y * LINE_H,
-            ScrollDelta::Pixels(p) => f32::from(p.y),
-        };
-        self.editor_scroll = (self.editor_scroll - dy).clamp(0.0, max);
-        cx.notify();
-    }
-
     // -- 操作 ---------------------------------------------------------------
-    fn open_file(&mut self) {
+    fn open_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("Markdown", &["md", "markdown", "txt"])
             .pick_file()
         {
             match std::fs::read_to_string(&path) {
                 Ok(text) => {
-                    self.source = text;
-                    self.cursor = self.source.chars().count();
-                    self.editor_scroll = 0.0;
+                    self.source = text.clone();
+                    // 换掉编辑器里的内容（不触发 Change，手动重排一次）
+                    self.editor
+                        .update(cx, |s, cx| s.set_value(text, window, cx));
                     self.relayout();
                     self.status = format!("已打开 {}", path.display()).into();
                 }
@@ -650,11 +495,11 @@ impl Render for WriterApp {
             .map(|p| p.strokes.clone())
             .unwrap_or_default();
         let zoom = self.zoom;
-        let (cursor_line, cursor_col) = self.cursor_line_col();
         let all_lines: Vec<String> = self.source.split('\n').map(|s| s.to_string()).collect();
         let total_pages = self.doc.pages.len().max(1);
         let status = self.status.clone();
-        let focus = self.focus.clone();
+        let size_mm_footer = self.size_mm;
+        let wrap_footer = self.wrap;
         let preset_name = PRESETS[self.preset].0;
         let landscape = self.landscape;
         let tab = self.tab;
@@ -685,8 +530,8 @@ impl Render for WriterApp {
                     .child("笔阵 · Bizhen"),
             )
             .child(div().flex_1())
-            .child(button("open", "打开…", cx, |this, _w, cx| {
-                this.open_file();
+            .child(button("open", "打开…", cx, |this, w, cx| {
+                this.open_file(w, cx);
                 cx.notify();
             }))
             .child(button("export", "导出 G-code", cx, |this, _w, cx| {
@@ -758,42 +603,13 @@ impl Render for WriterApp {
             );
 
         let left_content = if tab == Tab::Markdown {
-            let first = (self.editor_scroll / LINE_H) as usize;
-            let last = (first + EDITOR_VISIBLE_LINES + 8).min(all_lines.len());
-            let mut editor = div().flex().flex_col();
-            for (idx, line) in all_lines.iter().enumerate().take(last).skip(first) {
-                let row = if idx == cursor_line {
-                    let before: String = line.chars().take(cursor_col).collect();
-                    let after: String = line.chars().skip(cursor_col).collect();
-                    div()
-                        .h(px(LINE_H))
-                        .flex()
-                        .items_center()
-                        .child(div().text_xs().text_color(rgb(0xdddddd)).child(before))
-                        .child(div().w(px(1.5)).h(px(13.)).bg(rgb(0x3b82f6)))
-                        .child(div().text_xs().text_color(rgb(0xdddddd)).child(after))
-                } else {
-                    div()
-                        .h(px(LINE_H))
-                        .child(div().text_xs().text_color(rgb(0xbbbbbb)).child(
-                            if line.is_empty() {
-                                " ".to_string()
-                            } else {
-                                line.clone()
-                            },
-                        ))
-                };
-                editor = editor.child(row);
-            }
-            div()
-                .flex_1()
-                .min_h(px(0.))
-                .overflow_hidden()
-                .p_3()
-                .track_focus(&focus)
-                .on_key_down(cx.listener(Self::on_key))
-                .on_scroll(cx.listener(Self::on_wheel))
-                .child(editor)
+            // Kit 的多行输入：自带输入法组合、选区、撤销、鼠标定位
+            div().flex_1().min_h(px(0.)).p_2().child(
+                Textarea::new(&self.editor)
+                    .h_full()
+                    .w_full()
+                    .text_size(px(EDITOR_TEXT_SIZE)),
+            )
         } else {
             let mut panel = div().flex().flex_col().gap_1().p_3();
             panel = panel
@@ -1247,12 +1063,10 @@ impl Render for WriterApp {
                     .text_color(rgb(0xa0a0a0))
                     .child(status),
             )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(0x777777))
-                    .child(format!("第 {} 行", cursor_line + 1)),
-            );
+            .child(div().text_xs().text_color(rgb(0x777777)).child(format!(
+                "{:.1} mm · 折行 {:.0}",
+                size_mm_footer, wrap_footer
+            )));
 
         let mut root = div()
             .relative()
@@ -1617,6 +1431,13 @@ fn build_dialog(
 
 fn main() {
     gpui_kit::application().run(|cx: &mut App| {
+        // 初始化组件库的主题、图标与字体（用 Textarea 等控件前必须调用）
+        gpui_kit::init(cx);
+        gpui_kit::component::theme::Theme::change(
+            gpui_kit::component::theme::ThemeMode::Dark,
+            None,
+            cx,
+        );
         let bounds = Bounds::centered(None, size(px(1000.), px(730.)), cx);
         cx.open_window(
             WindowOptions {
