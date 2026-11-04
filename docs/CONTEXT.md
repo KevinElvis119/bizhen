@@ -267,3 +267,32 @@ M0 骨架 → M1 字库 → M2 排版 → M3 表格/公式/图片/分页 → M4 
 
 CLI：`bizhen-cli md x.md --jitter natural --seed 7 --intensity 1.2`。
 界面：顶部「字体与抖动」弹窗，字体链增删/排序 + 预设 + 逐项微调 + 换种子。
+---
+
+## 11. 追加：界面结构（2026-11-04 晚）
+
+```
+WriterApp
+├─ 顶部 header：打开 / 导出 G-code / 字体与抖动 / 翻页
+├─ body（flex row）
+│  ├─ 左栏 400px：tabs(Markdown | 页面)
+│  │   ├─ Markdown：自绘编辑器，editor_scroll 按 LINE_H=18px 换算，
+│  │   │   on_scroll_wheel 滚动 + on_key_down 编辑 + 光标自动跟随
+│  │   └─ 页面：纸张/方向/字号/页边距/折行宽/表格宽/缩放
+│  ├─ 中间：canvas，paint 里 window.with_content_mask(画布 bounds) 裁剪，
+│  │   保证 zoom 后纸张不覆盖工具栏
+│  └─ 右栏 286px：机器面板
+└─ 底部 footer：状态栏（页数/笔画/缺字）+ 行号
+```
+
+机器通信（`crates/bizhen-app/src/machine.rs`）：
+
+* 后台线程独占 `GrblLink`，界面通过 `mpsc` 投递 `Cmd`（Connect/Disconnect/Jog/
+  Unlock/Home/Reset/Send），状态放在 `Arc<Mutex<State>>` 里供每帧读取。
+* 空闲时每 400ms 轮询 `?`，解析 `<Idle|MPos:x,y,z|FS:..>`（`serial::parse_status`）。
+* Jog 与 WriterStudio 对齐：`$J=G21G91 X.. Y.. F..`（老固件退化 `G21G91`），
+  默认步长 10mm、速度 2500 mm/min；解锁 `$X`、回零 `$H`、复位 Ctrl-X(0x18)。
+
+编辑器为什么不用现成控件：`gpui-component` 0.9.0 的依赖是 `gpui-base ^0.9` +
+`gpui-pre =0.3.11`（GPUI Kit 自己的 gpui 分支），本仓库用的是 crates.io `gpui 0.2.2`，
+两者不是同一套运行时，接入等于整体迁移。因此仍自绘，已补上滚动与光标跟随；IME 仍未接。
