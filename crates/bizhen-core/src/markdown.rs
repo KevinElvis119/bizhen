@@ -1487,8 +1487,9 @@ fn reg_need(
     ts: &TextStyle,
     size: f64,
 ) {
-    let need = w + 2.0 * CELL_PAD_MM;
-    let minw = widest_char_width(txt, fonts, ts).max(size * 0.6) + 2.0 * CELL_PAD_MM;
+    // 与实际绘制时的内宽保持一致：扣除 2×pading 与 0.2em 安全余量后仍能放下一行
+    let need = w + 2.0 * CELL_PAD_MM + size * 0.2;
+    let minw = widest_char_width(txt, fonts, ts).max(size * 0.6) + 2.0 * CELL_PAD_MM + size * 0.2;
     if reg.c0 == reg.c1 {
         natural[reg.c0] = natural[reg.c0].max(need);
         mins[reg.c0] = mins[reg.c0].max(minw);

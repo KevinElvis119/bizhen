@@ -555,7 +555,7 @@ impl Render for WriterApp {
                 this.open_file();
                 cx.notify();
             }))
-            .child(button("export", "导出 G-code", cx, |this, _w, cx| {
+            .child(button("export", "导出", cx, |this, _w, cx| {
                 this.export_gcode();
                 cx.notify();
             }))
@@ -994,8 +994,9 @@ fn build_dialog(
             },
         ));
 
-    let mut rows = div().flex().flex_col().gap_1();
-    rows = rows
+    let mut rows_a = div().flex().flex_col().gap_1();
+    let mut rows_b = div().flex().flex_col().gap_1();
+    rows_a = rows_a
         .child(param_row(
             "强度",
             format!("{:.2}", jitter.intensity),
@@ -1041,7 +1042,8 @@ fn build_dialog(
             cx,
             |a| a.jitter.line_y_sigma = (a.jitter.line_y_sigma - 0.05).max(0.0),
             |a| a.jitter.line_y_sigma = (a.jitter.line_y_sigma + 0.05).min(3.0),
-        ))
+        ));
+    rows_b = rows_b
         .child(param_row(
             "行斜 σ(mm)",
             format!("{:.2}", jitter.line_tilt_sigma),
@@ -1115,12 +1117,12 @@ fn build_dialog(
         .child(page_row)
         .child(div().h(px(1.)).bg(rgb(0x444444)))
         .child(preset_row)
-        .child(rows)
+        .child(div().flex().gap_3().child(rows_a).child(rows_b))
 }
 
 fn main() {
     Application::new().run(|cx: &mut App| {
-        let bounds = Bounds::centered(None, size(px(1120.), px(740.)), cx);
+        let bounds = Bounds::centered(None, size(px(940.), px(700.)), cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
