@@ -18,7 +18,7 @@ use gpui::{
     PathBuilder, Render, SharedString, Subscription, Window, WindowBounds, WindowOptions,
 };
 use gpui_kit::component::button::Button;
-use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
+use gpui_kit::component::input::{Editor, EditorState, InputEvent};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 
 use bizhen_core::font::FontRegistry;
@@ -57,7 +57,7 @@ enum Tab {
 struct WriterApp {
     source: String,
     /// Kit 的多行输入状态：自带输入法组合、选区、撤销、鼠标定位
-    editor: Entity<TextareaState>,
+    editor: Entity<EditorState>,
     _editor_sub: Option<Subscription>,
     tab: Tab,
 
@@ -115,7 +115,11 @@ impl WriterApp {
             .ok()
             .and_then(|p| std::fs::read_to_string(p).ok())
             .unwrap_or_else(|| SAMPLE.to_string());
-        let editor = cx.new(|cx| TextareaState::new(window, cx).default_value(source.clone()));
+        let editor = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .default_value(source.clone())
+                .language("markdown")
+        });
         let mut app = Self {
             source,
             editor,
@@ -597,9 +601,9 @@ impl Render for WriterApp {
             );
 
         let left_content = if tab == Tab::Markdown {
-            // Kit 的多行输入：自带输入法组合、选区、撤销、鼠标定位
+            // Kit 的代码编辑器模式：行号 + Markdown 语法高亮 + 输入法
             div().flex_1().min_h(px(0.)).p_2().child(
-                Textarea::new(&self.editor)
+                Editor::new(&self.editor)
                     .h_full()
                     .w_full()
                     .text_size(px(EDITOR_TEXT_SIZE)),

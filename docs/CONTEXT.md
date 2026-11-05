@@ -312,6 +312,7 @@ GPUI Kit（`gpui-kit 0.9`，底层 `gpui-pre =0.3.11`）自带 `Textarea`（实�
 |---|---|---|
 | 0 | 运行时切换：`gpui-pre` alias + `gpui_kit::application()`；顺带修「连接后不刷新」与「打开串口无反馈（加 8 秒超时）」 | Cargo.toml / main.rs / machine.rs |
 | 1 | 自绘编辑器（156 行）→ `Entity<TextareaState>` + `Textarea`；`InputEvent::Change` 同步回 `source` 再重排 | main.rs |
+| 1b | 再换成 `EditorState` + `Editor`（代码编辑器模式）：行号 + Markdown 高亮，需开 `gpui-kit` 的 `tree-sitter-markdown` | Cargo.toml / main.rs |
 | 2 | 窗口改用 `gpui_kit::open_window`（挂 Root）；串口/波特率 → `Button + dropdown_menu + PopupMenuItem`，点击用 `WeakEntity::update` 回写 | main.rs |
 | 3 | `button()` 辅助函数改为构造 Kit `Button`（30+ 调用点签名不变），全应用按钮风格统一 | main.rs |
 

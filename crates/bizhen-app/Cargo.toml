@@ -14,7 +14,7 @@ path = "src/main.rs"
 bizhen-core = { workspace = true, features = ["serial"] }
 # 迁移到 GPUI Kit：gpui-kit 精确锁定 gpui-pre =0.3.11，并把 GPUI 一起重新导出。
 # 这里用 package 重命名把 gpui 指到同一个快照，源码里的 `use gpui::…` 不用全改。
-gpui-kit = "0.9"
+gpui-kit = { version = "0.9", features = ["tree-sitter-markdown"] }
 gpui = { package = "gpui-pre", version = "=0.3.11" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = [
     "font-kit",
