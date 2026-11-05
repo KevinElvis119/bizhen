@@ -23,6 +23,8 @@ pub struct State {
     pub pending: bool,
     /// 正在发作业
     pub busy: bool,
+    /// 作业已暂停（等「继续」）
+    pub paused: bool,
     pub progress: (usize, usize),
 }
 
@@ -42,7 +44,14 @@ pub enum Cmd {
     Unlock,
     Home,
     Reset,
-    Send(Vec<String>),
+    Send {
+        lines: Vec<String>,
+        pen_up: Vec<String>,
+        pen_down: Vec<String>,
+    },
+    Pause,
+    Resume,
+    Abort,
 }
 
 pub struct Machine {
@@ -80,8 +89,11 @@ fn set(state: &Arc<Mutex<State>>, f: impl FnOnce(&mut State)) {
     }
 }
 
+#[allow(unused_assignments)] // job 在其它 match 分支里读取，编译器按单次迭代看不出来
 fn worker(rx: Receiver<Cmd>, state: Arc<Mutex<State>>) {
     let mut link: Option<GrblLink> = None;
+    // 当前作业的控制标志（暂停/中止）
+    let mut job: Option<std::sync::Arc<bizhen_core::serial::JobControl>> = None;
 
     let refresh_status = |link: &mut GrblLink, state: &Arc<Mutex<State>>| match link.status() {
         Ok(line) => {
@@ -195,27 +207,75 @@ fn worker(rx: Receiver<Cmd>, state: Arc<Mutex<State>>) {
                     set(&state, |s| s.message = "已发送软复位".into());
                 }
             }
-            Ok(Cmd::Send(lines)) => {
+            Ok(Cmd::Send {
+                lines,
+                pen_up,
+                pen_down,
+            }) => {
                 let Some(l) = link.as_mut() else {
                     set(&state, |s| s.message = "未连接".into());
                     continue;
                 };
                 let total = lines.len();
+                let ctl = std::sync::Arc::new(bizhen_core::serial::JobControl::default());
+                job = Some(ctl.clone());
                 set(&state, |s| {
                     s.busy = true;
+                    s.paused = false;
                     s.progress = (0, total);
                 });
-                let result = l.send_program(&lines, |done, total| {
-                    set(&state, |s| s.progress = (done, total));
-                });
+                let result = l.send_program_controlled(
+                    &lines,
+                    |done, total| {
+                        set(&state, |s| s.progress = (done, total));
+                    },
+                    &ctl,
+                    &pen_up,
+                    &pen_down,
+                );
+                job = None;
+                let sent = state.lock().map(|s| s.progress.0).unwrap_or(0);
                 set(&state, |s| {
                     s.busy = false;
+                    s.paused = false;
                     s.message = match result {
-                        Ok(()) => format!("发送完成（{total} 行）"),
+                        Ok(bizhen_core::serial::SendOutcome::Done) => {
+                            format!("发送完成（{total} 行）")
+                        }
+                        Ok(bizhen_core::serial::SendOutcome::Aborted) => {
+                            format!("已中止（发到第 {sent} 行）")
+                        }
                         Err(e) => format!("发送失败：{e}"),
                     };
                 });
             }
+            Ok(Cmd::Pause) => match job.as_ref() {
+                Some(ctl) => {
+                    ctl.pause();
+                    set(&state, |s| {
+                        s.paused = true;
+                        s.message = "已暂停（先抬笔，再停投喂）".into();
+                    });
+                }
+                None => set(&state, |s| s.message = "没有正在发送的作业".into()),
+            },
+            Ok(Cmd::Resume) => match job.as_ref() {
+                Some(ctl) => {
+                    ctl.resume();
+                    set(&state, |s| {
+                        s.paused = false;
+                        s.message = "继续发送".into();
+                    });
+                }
+                None => set(&state, |s| s.message = "没有暂停中的作业".into()),
+            },
+            Ok(Cmd::Abort) => match job.as_ref() {
+                Some(ctl) => {
+                    ctl.abort();
+                    set(&state, |s| s.message = "正在中止…".into());
+                }
+                None => set(&state, |s| s.message = "没有正在发送的作业".into()),
+            },
             Err(RecvTimeoutError::Timeout) => {
                 if let Some(l) = link.as_mut() {
                     let busy = state.lock().map(|s| s.busy).unwrap_or(false);

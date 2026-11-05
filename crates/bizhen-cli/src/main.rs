@@ -144,6 +144,8 @@ fn cmd_md(args: &[String]) -> ExitCode {
     let mut landscape = false;
     let mut style = MarkdownStyle::default();
     let mut font_names: Vec<String> = Vec::new();
+    let mut invert_x = false;
+    let mut invert_y = false;
     let mut jitter_preset: Option<String> = None;
     let mut seed: u64 = 20240910;
     let mut intensity = 1.0_f64;
@@ -163,6 +165,12 @@ fn cmd_md(args: &[String]) -> ExitCode {
                 }
             }
             "--landscape" => landscape = true,
+            "--invert-x" => {
+                invert_x = true;
+            }
+            "--invert-y" => {
+                invert_y = true;
+            }
             "--margin-top" => {
                 i += 1;
                 if let Some(v) = args.get(i).and_then(|s| s.parse::<f64>().ok()) {
@@ -295,7 +303,11 @@ fn cmd_md(args: &[String]) -> ExitCode {
     match out_ext.as_str() {
         "gcode" | "nc" | "ngc" => {
             let strokes = doc.strokes();
-            let cfg = GCodeConfig::default();
+            let cfg = GCodeConfig {
+                invert_x,
+                invert_y,
+                ..GCodeConfig::default()
+            };
             let result = gcode::generate(&strokes, &cfg, page.height, None);
             if let Some(path) = &output {
                 if let Err(e) = std::fs::write(path, result.text()) {

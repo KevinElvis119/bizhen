@@ -122,14 +122,63 @@ impl GrblLink {
     pub fn send_program(
         &mut self,
         lines: &[String],
-        mut progress: impl FnMut(usize, usize),
+        progress: impl FnMut(usize, usize),
     ) -> Result<(), String> {
+        self.send_program_controlled(lines, progress, &JobControl::default(), &[], &[])
+            .map(|_| ())
+    }
+
+    /// 可暂停 / 可中止地发送程序。
+    ///
+    /// 每发一行前检查 `ctl`：
+    /// * 置为暂停 → 先发抬笔指令，停止投喂（在途运动走完自然停下，不洇墨）；
+    /// * 恢复 → 先发落笔指令，继续投喂；
+    /// * 中止 → 发软复位 `\x18` 清空气动缓冲，返回 `Ok(Aborted)`。
+    pub fn send_program_controlled(
+        &mut self,
+        lines: &[String],
+        mut progress: impl FnMut(usize, usize),
+        ctl: &JobControl,
+        pen_up: &[String],
+        pen_down: &[String],
+    ) -> Result<SendOutcome, String> {
         let total = lines.len();
+        let mut pen_is_up = false;
         for (i, line) in lines.iter().enumerate() {
+            if ctl.aborted() {
+                // 软复位：清缓冲、停运动
+                self.port
+                    .write_all(&[0x18])
+                    .map_err(|e| format!("写入串口失败：{e}"))?;
+                self.port.flush().ok();
+                return Ok(SendOutcome::Aborted);
+            }
+            if ctl.paused() && !pen_is_up {
+                for l in pen_up {
+                    self.send_line(l)?;
+                }
+                pen_is_up = true;
+            }
+            while ctl.paused() && !ctl.aborted() {
+                std::thread::sleep(std::time::Duration::from_millis(30));
+            }
+            if pen_is_up {
+                for l in pen_down {
+                    self.send_line(l)?;
+                }
+                pen_is_up = false;
+            }
+            if ctl.aborted() {
+                self.port
+                    .write_all(&[0x18])
+                    .map_err(|e| format!("写入串口失败：{e}"))?;
+                self.port.flush().ok();
+                return Ok(SendOutcome::Aborted);
+            }
             self.send_line(line)?;
             progress(i + 1, total);
         }
-        Ok(())
+        Ok(SendOutcome::Done)
     }
 
     /// 查询实时状态（`?`），返回原始应答行。
@@ -262,9 +311,54 @@ fn parse_xyz(v: &str) -> Option<(f64, f64, f64)> {
     Some((x, y, z))
 }
 
+/// 作业控制标志：界面线程置位，发送线程在每行之间检查。
+#[derive(Debug, Default)]
+pub struct JobControl {
+    paused: std::sync::atomic::AtomicBool,
+    aborted: std::sync::atomic::AtomicBool,
+}
+
+use std::sync::atomic::Ordering as AtomicOrdering;
+
+impl JobControl {
+    pub fn pause(&self) {
+        self.paused.store(true, AtomicOrdering::SeqCst);
+    }
+    pub fn resume(&self) {
+        self.paused.store(false, AtomicOrdering::SeqCst);
+    }
+    pub fn abort(&self) {
+        self.aborted.store(true, AtomicOrdering::SeqCst);
+    }
+    pub fn paused(&self) -> bool {
+        self.paused.load(AtomicOrdering::SeqCst)
+    }
+    pub fn aborted(&self) -> bool {
+        self.aborted.load(AtomicOrdering::SeqCst)
+    }
+}
+
+/// 一次发送的结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendOutcome {
+    Done,
+    Aborted,
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn job_control_flags() {
+        let c = JobControl::default();
+        assert!(!c.paused() && !c.aborted());
+        c.pause();
+        assert!(c.paused());
+        c.resume();
+        assert!(!c.paused());
+        c.abort();
+        assert!(c.aborted());
+    }
 
     #[test]
     fn parses_grbl_status() {

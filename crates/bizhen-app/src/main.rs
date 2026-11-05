@@ -93,6 +93,10 @@ struct WriterApp {
     ports: Vec<PortInfo>,
     port_idx: usize,
     baud_idx: usize,
+    /// 反转 X 轴（原点在右上角一侧的机型）
+    invert_x: bool,
+    /// 反转 Y 轴（原点在左下角一侧的机型）
+    invert_y: bool,
     jog_step: f64,
     jog_feed: f64,
     /// 发出机器命令后保持刷新若干帧，等后台线程回报状态
@@ -160,6 +164,8 @@ impl WriterApp {
             ports: serial::list_ports(),
             port_idx: 0,
             baud_idx: 4, // 115200
+            invert_x: false,
+            invert_y: false,
             jog_step: 10.0,
             jog_feed: 2500.0,
             poll_frames: 0,
@@ -194,6 +200,15 @@ impl WriterApp {
             }
         }
         app
+    }
+
+    /// 按界面上的轴设置构造 G-code 配置。
+    fn gcode_config(&self) -> GCodeConfig {
+        GCodeConfig {
+            invert_x: self.invert_x,
+            invert_y: self.invert_y,
+            ..GCodeConfig::default()
+        }
     }
 
     fn effective_page(&self) -> PageSpec {
@@ -312,7 +327,7 @@ impl WriterApp {
     /// 导出 G-code：同样用异步保存对话框。
     fn export_gcode(&mut self, cx: &mut Context<Self>) {
         let page = self.effective_page();
-        let cfg = GCodeConfig::default();
+        let cfg = self.gcode_config();
         let result = gcode::generate(&self.doc.strokes(), &cfg, page.height, None);
         let text = result.text().to_string();
         let summary = format!(
@@ -382,9 +397,13 @@ impl WriterApp {
             return;
         }
         let page = self.effective_page();
-        let cfg = GCodeConfig::default();
+        let cfg = self.gcode_config();
         let lines = gcode::generate(&self.doc.strokes(), &cfg, page.height, None).lines;
-        self.machine.send(machine::Cmd::Send(lines));
+        self.machine.send(machine::Cmd::Send {
+            lines,
+            pen_up: cfg.pen_up_lines(),
+            pen_down: cfg.pen_down_lines(None),
+        });
         self.poke();
         cx.notify();
     }
@@ -507,6 +526,8 @@ impl Render for WriterApp {
         };
         let landscape = self.landscape;
         let tab = self.tab;
+        let invert_x = self.invert_x;
+        let invert_y = self.invert_y;
         let machine_state = self.machine.snapshot();
         let port_name = self
             .ports
@@ -532,7 +553,7 @@ impl Render for WriterApp {
                     .child("笔阵 · Bizhen"),
             )
             .child(div().flex_1())
-            .child(button("open", "打开…", cx, |this, w, cx| {
+            .child(button("open", "打开…", cx, |this, _w, cx| {
                 this.open_file(cx);
                 cx.notify();
             }))
@@ -1094,11 +1115,11 @@ impl Render for WriterApp {
                     |a| a.jog_feed = (a.jog_feed + 250.0).min(20000.0),
                 ));
 
-        // 方向键（Y+ / X− X+ / Y−）
+        // 方向键按十字排：上 / 左·右 / 下
         let jog_button = |id: &str, label: &str, dx: f64, dy: f64| {
             div()
                 .id(SharedString::from(id.to_string()))
-                .px_3()
+                .w(px(56.))
                 .py_2()
                 .rounded_md()
                 .bg(rgb(0x3a3a3a))
@@ -1122,20 +1143,71 @@ impl Render for WriterApp {
                 div()
                     .mt_1()
                     .flex()
-                    .gap_1()
-                    .child(div().w(px(44.)).h(px(28.)))
-                    .child(jog_button("jog_yp", "Y+", 0.0, 1.0))
-                    .child(div().w(px(44.)).h(px(28.))),
+                    .justify_center()
+                    .child(jog_button("jog_yp", "Y+", 0.0, 1.0)),
             )
             .child(
                 div()
                     .flex()
+                    .justify_center()
                     .gap_1()
                     .child(jog_button("jog_xm", "X−", -1.0, 0.0))
-                    .child(jog_button("jog_xp", "X+", 1.0, 0.0))
+                    .child(jog_button("jog_xp", "X+", 1.0, 0.0)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_center()
                     .child(jog_button("jog_ym", "Y−", 0.0, -1.0)),
             )
-            .child(div().mt_2())
+            // 反向轴 + 暂停/终止（一行放 4 个，省竖向空间）
+            .child(
+                div()
+                    .flex()
+                    .gap_1()
+                    .mt_1()
+                    .child(button(
+                        "inv_x",
+                        if invert_x { "X 反向" } else { "X 正向" },
+                        cx,
+                        |this, _w, cx| {
+                            this.invert_x = !this.invert_x;
+                            cx.notify();
+                        },
+                    ))
+                    .child(button(
+                        "inv_y",
+                        if invert_y { "Y 反向" } else { "Y 正向" },
+                        cx,
+                        |this, _w, cx| {
+                            this.invert_y = !this.invert_y;
+                            cx.notify();
+                        },
+                    ))
+                    .child(button(
+                        "pause",
+                        if machine_state.paused {
+                            "继续"
+                        } else {
+                            "暂停"
+                        },
+                        cx,
+                        |this, _w, cx| {
+                            if this.machine.snapshot().paused {
+                                this.machine.send(machine::Cmd::Resume);
+                            } else {
+                                this.machine.send(machine::Cmd::Pause);
+                            }
+                            this.poke();
+                            cx.notify();
+                        },
+                    ))
+                    .child(button("abort", "终止", cx, |this, _w, cx| {
+                        this.machine.send(machine::Cmd::Abort);
+                        this.poke();
+                        cx.notify();
+                    })),
+            )
             .child(button(
                 "print",
                 "发送作业（打印）",

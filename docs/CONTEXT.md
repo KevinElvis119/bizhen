@@ -402,3 +402,36 @@ opt-level = 2
 
 冒烟钩子：`BIZHEN_DEMO_OPEN=路径` 启动即走一次「打开文件」流程；
 `BIZHEN_PERF=1` 打印每次 render / canvas 耗时。
+---
+
+## 15. 机器面板：暂停/继续/终止、十字方向键、反向轴（2026-11-06）
+
+对齐 WriterStudio 的语（`serial_link.py` 的 pause/resume/abort）：
+
+* **暂停**：不是发 `!` 硬停，而是「先抬笔，再停止投喂」——在途运动自然走完，
+  笔已经离纸，不会在保持期间洇墨。实现上 `JobControl.paused` 置位，发送循环
+  在下一行前插入 `pen_up_lines()` 并原地等待。
+* **继续**：先补 `pen_down_lines()`，再继续投喂。
+* **终止**：`JobControl.abort` 置位，发送循环立刻写软复位 `\x18` 清空缓冲，
+  返回 `SendOutcome::Aborted`，界面显示「已中止（发到第 N 行）」。
+
+核心改动：
+```rust
+pub struct JobControl { paused: AtomicBool, aborted: AtomicBool }
+pub enum SendOutcome { Done, Aborted }
+pub fn send_program_controlled(&mut self, lines, progress, ctl, pen_up, pen_down)
+    -> Result<SendOutcome, String>
+```
+
+界面（右栏）：
+* 方向键改成十字排列：上 `Y+` / 左 `X−`·右 `X+` / 下 `Y−`；
+* 一行四个按钮：`X 正向/反向`、`Y 正向/反向`、`暂停/继续`、`终止`；
+* 右栏整体可滚动，窗口矮时也能摸到「发送作业」。
+
+反向轴沿用原版语义（`gcode::page_to_machine`）：基础映射 `(x, 纸高−y)` 之后
+按需取反，等价于原点换到另一侧。CLI 也加了 `--invert-x/--invert-y` 便于核对：
+
+```
+正常      G0 X11.292 Y13.952
+反转 X+Y   G0 X-11.292 Y-13.952
+```
