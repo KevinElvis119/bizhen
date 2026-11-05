@@ -15,11 +15,14 @@ mod machine;
 
 use gpui::{
     canvas, div, point, prelude::*, px, quad, rgb, size, App, Bounds, ContentMask, Context, Entity,
-    PathBuilder, Render, SharedString, Subscription, Window, WindowBounds, WindowOptions,
+    PathBuilder, Render, SharedString, Subscription, WeakEntity, Window, WindowBounds,
+    WindowOptions,
 };
 use gpui_kit::component::button::Button;
+use gpui_kit::component::dialog::Dialog;
 use gpui_kit::component::input::{Editor, EditorState, InputEvent};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::WindowExt;
 
 use bizhen_core::font::FontRegistry;
 use bizhen_core::gcode::{self, GCodeConfig};
@@ -72,7 +75,8 @@ struct WriterApp {
     registry: FontRegistry,
     font_names: Vec<String>,
     jitter: JitterParams,
-    dialog: bool,
+    /// 冒烟/演示：BIZHEN_DEMO_DIALOG=1 时首帧自动打开弹窗
+    auto_dialog: bool,
     font_page: usize,
 
     symbols: SymbolFonts,
@@ -141,7 +145,7 @@ impl WriterApp {
             font_names,
             jitter: JitterParams::default(),
             // 演示/冒烟：BIZHEN_DEMO_DIALOG=1 启动即打开弹窗
-            dialog: std::env::var("BIZHEN_DEMO_DIALOG").is_ok(),
+            auto_dialog: std::env::var("BIZHEN_DEMO_DIALOG").is_ok(),
             font_page: 0,
             symbols,
             doc: RenderedDoc::default(),
@@ -437,55 +441,6 @@ fn setting_row(
         ))
 }
 
-/// 抖动参数行（弹窗用，改动后立即重排）。
-fn param_row(
-    label: &str,
-    value: String,
-    id: &str,
-    cx: &mut Context<WriterApp>,
-    dec: impl Fn(&mut WriterApp) + 'static,
-    inc: impl Fn(&mut WriterApp) + 'static,
-) -> impl IntoElement {
-    div()
-        .flex()
-        .items_center()
-        .gap_2()
-        .child(
-            div()
-                .w(px(150.))
-                .text_xs()
-                .text_color(rgb(0xb0b0b0))
-                .child(label.to_string()),
-        )
-        .child(button(
-            &format!("{id}_dec"),
-            "−",
-            cx,
-            move |this, _w, cx| {
-                dec(this);
-                this.relayout();
-                cx.notify();
-            },
-        ))
-        .child(
-            div()
-                .w(px(64.))
-                .text_xs()
-                .text_color(rgb(0xffffff))
-                .child(value),
-        )
-        .child(button(
-            &format!("{id}_inc"),
-            "＋",
-            cx,
-            move |this, _w, cx| {
-                inc(this);
-                this.relayout();
-                cx.notify();
-            },
-        ))
-}
-
 impl Render for WriterApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let page = self.effective_page();
@@ -536,10 +491,14 @@ impl Render for WriterApp {
                 this.export_gcode();
                 cx.notify();
             }))
-            .child(button("style", "字体与抖动", cx, |this, _w, cx| {
-                this.dialog = !this.dialog;
-                cx.notify();
-            }))
+            .child(button(
+                "style",
+                "字体与抖动",
+                cx,
+                |_this, window, cx| {
+                    open_style_dialog(window, cx);
+                },
+            ))
             .child(button("prev_page", "◀", cx, |this, _w, cx| {
                 this.page_index = this.page_index.saturating_sub(1);
                 cx.notify();
@@ -1089,17 +1048,10 @@ impl Render for WriterApp {
         );
         root = root.child(footer);
 
-        if self.dialog {
-            let entries: Vec<(String, String, String)> = self
-                .registry
-                .entries()
-                .iter()
-                .map(|e| (e.name.clone(), e.display.clone(), e.kind.to_string()))
-                .collect();
-            let chain = self.font_names.clone();
-            let jitter = self.jitter.clone();
-            let font_page = self.font_page;
-            root = root.child(build_dialog(&chain, &entries, font_page, &jitter, cx));
+        // 冒烟/演示：首帧自动打开弹窗
+        if self.auto_dialog {
+            self.auto_dialog = false;
+            open_style_dialog(window, cx);
         }
 
         // 已连接或刚发过机器命令时刷新状态（只在没有现成链时起一条）
@@ -1114,15 +1066,102 @@ impl Render for WriterApp {
     }
 }
 
-/// 「字体与手写抖动」弹窗。
-fn build_dialog(
-    chain: &[String],
-    entries: &[(String, String, String)],
-    page: usize,
-    jitter: &JitterParams,
-    cx: &mut Context<WriterApp>,
+/// 用 Kit 的 Dialog 打开「字体与手写抖动」面板（每帧重建，数值始终跟着状态走）。
+fn open_style_dialog(window: &mut Window, cx: &mut Context<WriterApp>) {
+    let weak = cx.entity().downgrade();
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        build_style_dialog(dialog, &weak, cx)
+    });
+}
+
+/// 弹窗里的按钮：拿不到 Context<WriterApp>，用 WeakEntity 回写状态。
+fn wb(
+    weak: &WeakEntity<WriterApp>,
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    on_click: impl Fn(&mut WriterApp, &mut Context<WriterApp>) + 'static,
 ) -> impl IntoElement {
-    const PER_PAGE: usize = 12;
+    let weak = weak.clone();
+    Button::new(id.into())
+        .label(label.into())
+        .on_click(move |_, _window, cx| {
+            let _ = weak.update(cx, |app: &mut WriterApp, cx| on_click(app, cx));
+        })
+}
+
+/// 弹窗里的一行参数（−/+），改完自动重排预览。
+fn w_param(
+    weak: &WeakEntity<WriterApp>,
+    label: &str,
+    value: String,
+    id: &str,
+    dec: impl Fn(&mut WriterApp) + 'static,
+    inc: impl Fn(&mut WriterApp) + 'static,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(
+            div()
+                .w(px(150.))
+                .text_xs()
+                .text_color(rgb(0xb0b0b0))
+                .child(label.to_string()),
+        )
+        .child(wb(
+            weak,
+            SharedString::from(format!("{id}_dec")),
+            "−",
+            move |a: &mut WriterApp, cx| {
+                dec(a);
+                a.relayout();
+                cx.notify();
+            },
+        ))
+        .child(
+            div()
+                .w(px(64.))
+                .text_xs()
+                .text_color(rgb(0xffffff))
+                .child(value),
+        )
+        .child(wb(
+            weak,
+            SharedString::from(format!("{id}_inc")),
+            "＋",
+            move |a: &mut WriterApp, cx| {
+                inc(a);
+                a.relayout();
+                cx.notify();
+            },
+        ))
+}
+
+/// 「字体与手写抖动」的弹窗内容。
+fn build_style_dialog(dialog: Dialog, weak: &WeakEntity<WriterApp>, cx: &mut App) -> Dialog {
+    const PER_PAGE: usize = 9;
+
+    let Some(handle) = weak.upgrade() else {
+        return dialog;
+    };
+    let (chain, entries, jitter, page, size_mm) = {
+        let app = handle.read(cx);
+        let entries: Vec<(String, String, String)> = app
+            .registry
+            .entries()
+            .iter()
+            .map(|e| (e.name.clone(), e.display.clone(), e.kind.to_string()))
+            .collect();
+        (
+            app.font_names.clone(),
+            entries,
+            app.jitter.clone(),
+            app.font_page,
+            app.size_mm,
+        )
+    };
+
     let total = entries.len();
     let pages = total.div_ceil(PER_PAGE).max(1);
     let page = page.min(pages - 1);
@@ -1137,6 +1176,7 @@ fn build_dialog(
             .unwrap_or_else(|| name.to_string())
     };
 
+    // ---- 字体链 ----
     let mut chips = div().flex().flex_wrap().gap_1();
     if chain.is_empty() {
         chips = chips.child(
@@ -1162,38 +1202,29 @@ fn build_dialog(
                     i + 1,
                     display_of(name)
                 )))
-                .child(button(
-                    &format!("up_{i}"),
-                    "↑",
-                    cx,
-                    move |this, _w, cx| {
-                        if let Some(pos) = this.font_names.iter().position(|c| c == &up) {
-                            if pos > 0 {
-                                this.font_names.swap(pos - 1, pos);
-                            }
+                .child(wb(weak, format!("up_{i}"), "↑", move |this, cx| {
+                    if let Some(pos) = this.font_names.iter().position(|c| c == &up) {
+                        if pos > 0 {
+                            this.font_names.swap(pos - 1, pos);
                         }
-                        this.relayout();
-                        cx.notify();
-                    },
-                ))
-                .child(button(
-                    &format!("del_{i}"),
-                    "×",
-                    cx,
-                    move |this, _w, cx| {
-                        if this.font_names.len() <= 1 {
-                            return;
-                        }
-                        if let Some(pos) = this.font_names.iter().position(|c| c == &del) {
-                            this.font_names.remove(pos);
-                        }
-                        this.relayout();
-                        cx.notify();
-                    },
-                )),
+                    }
+                    this.relayout();
+                    cx.notify();
+                }))
+                .child(wb(weak, format!("del_{i}"), "×", move |this, cx| {
+                    if this.font_names.len() <= 1 {
+                        return;
+                    }
+                    if let Some(pos) = this.font_names.iter().position(|c| c == &del) {
+                        this.font_names.remove(pos);
+                    }
+                    this.relayout();
+                    cx.notify();
+                })),
         );
     }
 
+    // ---- 可选字体（分页）----
     let mut font_grid = div().flex().flex_wrap().gap_1();
     for (name, display, kind) in &entries[start..end] {
         let chosen = chain.iter().any(|c| c == name);
@@ -1213,20 +1244,15 @@ fn build_dialog(
                 .flex()
                 .items_center()
                 .gap_1()
-                .child(button(
-                    &format!("pick_{name}"),
-                    label,
-                    cx,
-                    move |this, _w, cx| {
-                        if let Some(pos) = this.font_names.iter().position(|c| c == &n) {
-                            this.font_names.remove(pos);
-                        } else {
-                            this.font_names.push(n.clone());
-                        }
-                        this.relayout();
-                        cx.notify();
-                    },
-                ))
+                .child(wb(weak, format!("pick_{name}"), label, move |this, cx| {
+                    if let Some(pos) = this.font_names.iter().position(|c| c == &n) {
+                        this.font_names.remove(pos);
+                    } else {
+                        this.font_names.push(n.clone());
+                    }
+                    this.relayout();
+                    cx.notify();
+                }))
                 .child(
                     div()
                         .text_xs()
@@ -1240,7 +1266,7 @@ fn build_dialog(
         .flex()
         .items_center()
         .gap_2()
-        .child(button("font_prev", "◀", cx, |this, _w, cx| {
+        .child(wb(weak, "font_prev", "◀", |this, cx| {
             this.font_page = this.font_page.saturating_sub(1);
             cx.notify();
         }))
@@ -1250,20 +1276,16 @@ fn build_dialog(
             pages,
             total
         )))
-        .child(button("font_next", "▶", cx, |this, _w, cx| {
+        .child(wb(weak, "font_next", "▶", |this, cx| {
             this.font_page += 1;
             cx.notify();
         }))
-        .child(button(
-            "import_font",
-            "导入字体…",
-            cx,
-            |this, _w, cx| {
-                this.status = this.import_font().into();
-                cx.notify();
-            },
-        ));
+        .child(wb(weak, "import_font", "导入字体…", |this, cx| {
+            this.status = this.import_font().into();
+            cx.notify();
+        }));
 
+    // ---- 抖动预设 ----
     let preset_row = div()
         .flex()
         .items_center()
@@ -1275,61 +1297,63 @@ fn build_dialog(
                 .text_color(rgb(0xb0b0b0))
                 .child("预设"),
         )
-        .child(button("j_off", "关闭", cx, |this, _w, cx| {
+        .child(wb(weak, "j_off", "关闭", |this, cx| {
             this.jitter = JitterParams::default();
             this.relayout();
             cx.notify();
         }))
-        .child(button("j_subtle", "轻微", cx, |this, _w, cx| {
+        .child(wb(weak, "j_subtle", "轻微", |this, cx| {
             this.jitter = JitterParams::subtle(this.size_mm);
             this.relayout();
             cx.notify();
         }))
-        .child(button("j_natural", "自然", cx, |this, _w, cx| {
+        .child(wb(weak, "j_natural", "自然", |this, cx| {
             this.jitter = JitterParams::natural(this.size_mm);
             this.relayout();
             cx.notify();
         }))
-        .child(button("j_strong", "强烈", cx, |this, _w, cx| {
+        .child(wb(weak, "j_strong", "强烈", |this, cx| {
             this.jitter = JitterParams::strong(this.size_mm);
             this.relayout();
             cx.notify();
         }))
-        .child(button(
+        .child(wb(
+            weak,
             "j_reroll",
             "换一套（重摇种子）",
-            cx,
-            |this, _w, cx| {
+            |this, cx| {
                 this.jitter.seed = this.jitter.seed.wrapping_add(1);
                 this.relayout();
                 cx.notify();
             },
         ));
 
+    // ---- 参数 ----
     let mut rows_a = div().flex().flex_col().gap_1();
     let mut rows_b = div().flex().flex_col().gap_1();
+    let mut rows_c = div().flex().flex_col().gap_1();
     rows_a = rows_a
-        .child(param_row(
+        .child(w_param(
+            weak,
             "强度",
             format!("{:.2}", jitter.intensity),
             "ji",
-            cx,
             |a| a.jitter.intensity = (a.jitter.intensity - 0.1).max(0.1),
             |a| a.jitter.intensity = (a.jitter.intensity + 0.1).min(5.0),
         ))
-        .child(param_row(
+        .child(w_param(
+            weak,
             "字号波动 σ",
             format!("{:.3}", jitter.size_sigma),
             "js",
-            cx,
             |a| a.jitter.size_sigma = (a.jitter.size_sigma - 0.01).max(0.0),
             |a| a.jitter.size_sigma = (a.jitter.size_sigma + 0.01).min(0.5),
         ))
-        .child(param_row(
+        .child(w_param(
+            weak,
             "字符位移 σ(mm)",
             format!("{:.2}", jitter.char_x_sigma),
             "jx",
-            cx,
             |a| {
                 a.jitter.char_x_sigma = (a.jitter.char_x_sigma - 0.05).max(0.0);
                 a.jitter.char_y_sigma = (a.jitter.char_y_sigma - 0.04).max(0.0);
@@ -1338,98 +1362,90 @@ fn build_dialog(
                 a.jitter.char_x_sigma = (a.jitter.char_x_sigma + 0.05).min(3.0);
                 a.jitter.char_y_sigma = (a.jitter.char_y_sigma + 0.04).min(3.0);
             },
-        ))
-        .child(param_row(
+        ));
+    rows_b = rows_b
+        .child(w_param(
+            weak,
             "字符旋转 σ(°)",
             format!("{:.1}", jitter.char_rot_sigma),
             "jr",
-            cx,
             |a| a.jitter.char_rot_sigma = (a.jitter.char_rot_sigma - 0.2).max(0.0),
             |a| a.jitter.char_rot_sigma = (a.jitter.char_rot_sigma + 0.2).min(15.0),
         ))
-        .child(param_row(
+        .child(w_param(
+            weak,
             "行基线 σ(mm)",
             format!("{:.2}", jitter.line_y_sigma),
             "jy",
-            cx,
             |a| a.jitter.line_y_sigma = (a.jitter.line_y_sigma - 0.05).max(0.0),
             |a| a.jitter.line_y_sigma = (a.jitter.line_y_sigma + 0.05).min(3.0),
-        ));
-    rows_b = rows_b
-        .child(param_row(
+        ))
+        .child(w_param(
+            weak,
             "行斜 σ(mm)",
             format!("{:.2}", jitter.line_tilt_sigma),
             "jt",
-            cx,
             |a| a.jitter.line_tilt_sigma = (a.jitter.line_tilt_sigma - 0.05).max(0.0),
             |a| a.jitter.line_tilt_sigma = (a.jitter.line_tilt_sigma + 0.05).min(4.0),
-        ))
-        .child(param_row(
+        ));
+    rows_c = rows_c
+        .child(w_param(
+            weak,
             "笔画旋转 σ(°)",
             format!("{:.1}", jitter.stroke_theta_sigma),
             "jst",
-            cx,
             |a| a.jitter.stroke_theta_sigma = (a.jitter.stroke_theta_sigma - 0.5).max(0.0),
             |a| a.jitter.stroke_theta_sigma = (a.jitter.stroke_theta_sigma + 0.5).min(20.0),
         ))
-        .child(param_row(
+        .child(w_param(
+            weak,
             "笔画修剪(mm)",
             format!("{:.2}", jitter.stroke_trim_mm),
             "jtr",
-            cx,
             |a| a.jitter.stroke_trim_mm = (a.jitter.stroke_trim_mm - 0.01).max(0.0),
             |a| a.jitter.stroke_trim_mm = (a.jitter.stroke_trim_mm + 0.01).min(1.0),
         ))
-        .child(param_row(
+        .child(w_param(
+            weak,
             "结构线起伏(mm)",
             format!("{:.2}", jitter.line_wobble),
             "jw",
-            cx,
             |a| a.jitter.line_wobble = (a.jitter.line_wobble - 0.05).max(0.0),
             |a| a.jitter.line_wobble = (a.jitter.line_wobble + 0.05).min(2.0),
         ));
 
-    div()
-        .absolute()
-        .top(px(52.))
-        .right(px(12.))
-        .w(px(620.))
-        .bg(rgb(0x2b2b2b))
-        .border_1()
-        .border_color(rgb(0x555555))
-        .rounded_lg()
-        .p_3()
-        .flex()
-        .flex_col()
-        .gap_2()
+    let _ = size_mm;
+
+    dialog
+        .title("字体与手写抖动")
+        .w(px(780.))
+        .close_button(true)
         .child(
             div()
                 .flex()
-                .items_center()
+                .flex_col()
+                .gap_2()
+                .child(chips)
+                .child(font_grid)
+                .child(page_row)
+                .child(div().h(px(1.)).bg(rgb(0x444444)))
+                .child(preset_row)
                 .child(
                     div()
-                        .flex_1()
-                        .text_sm()
-                        .text_color(rgb(0xffffff))
-                        .child("字体与手写抖动"),
-                )
-                .child(button("dlg_close", "关闭", cx, |this, _w, cx| {
-                    this.dialog = false;
-                    cx.notify();
-                })),
+                        .flex()
+                        .gap_3()
+                        .child(rows_a)
+                        .child(rows_b)
+                        .child(rows_c),
+                ),
         )
-        .child(
-            div()
-                .text_xs()
-                .text_color(rgb(0x999999))
-                .child("字体链按优先级匹配：靠前者负责绘制它能画的字符"),
+        .footer(
+            div().flex().justify_end().gap_2().child(
+                Button::new("dlg_close")
+                    .label("关闭")
+                    .on_click(|_, window, cx| window.close_dialog(cx)),
+            ),
         )
-        .child(chips)
-        .child(font_grid)
-        .child(page_row)
-        .child(div().h(px(1.)).bg(rgb(0x444444)))
-        .child(preset_row)
-        .child(div().flex().gap_3().child(rows_a).child(rows_b))
 }
 
 fn main() {

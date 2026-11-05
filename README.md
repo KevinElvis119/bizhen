@@ -43,6 +43,8 @@
   鼠标定位、代码折叠；需要 `tree-sitter-markdown` 特性（+1.4 MB）。
 * 串口 / 波特率是 Kit 的下拉菜单（`Button + dropdown_menu`），选中项打勾。
 * 按钮统一用 Kit 的 `Button`，悬停、焦点环、键盘可达性由组件库负责。
+* 「字体与抖动」是 Kit 的 `Dialog`（模态、遮罩、底部「关闭」），内容每帧重建，
+  改参数时数值立刻跟着变。
 * 预览画布仍是自绘（`canvas` + `ContentMask` 裁剪），因为它画的是笔画而不是控件。
 
 > 迁移记录见 [docs/CONTEXT.md](docs/CONTEXT.md) 第 12 节。
