@@ -15,8 +15,8 @@ mod machine;
 
 use gpui::{
     canvas, div, point, prelude::*, px, quad, rgb, size, App, Bounds, ContentMask, Context, Entity,
-    PathBuilder, Render, SharedString, Subscription, WeakEntity, Window, WindowBounds,
-    WindowOptions,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, Render, ScrollEvent,
+    SharedString, Subscription, WeakEntity, Window, WindowBounds, WindowOptions,
 };
 use gpui_kit::component::button::Button;
 use gpui_kit::component::dialog::Dialog;
@@ -87,6 +87,12 @@ struct WriterApp {
     doc: RenderedDoc,
     page_index: usize,
     zoom: f32,
+    /// 预览平移（屏幕像素）
+    pan_x: f32,
+    pan_y: f32,
+    /// 右键拖动中
+    panning: bool,
+    last_mouse: (f32, f32),
     status: SharedString,
 
     machine: Machine,
@@ -158,6 +164,10 @@ impl WriterApp {
             symbols,
             doc: RenderedDoc::default(),
             page_index: 0,
+            pan_x: 0.0,
+            pan_y: 0.0,
+            panning: false,
+            last_mouse: (0.0, 0.0),
             zoom: std::env::var("BIZHEN_DEMO_ZOOM")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -543,6 +553,8 @@ impl Render for WriterApp {
         let invert_y = self.invert_y;
         let start_x = self.start_x;
         let start_y = self.start_y;
+        let pan_x = self.pan_x;
+        let pan_y = self.pan_y;
         let machine_state = self.machine.snapshot();
         let port_name = self
             .ports
@@ -860,21 +872,6 @@ impl Render for WriterApp {
                         a.table_width = (a.table_width + 10.0).min(400.0);
                         a.relayout();
                     },
-                ))
-                .child(
-                    div()
-                        .mt_2()
-                        .text_xs()
-                        .text_color(rgb(0x888888))
-                        .child("预览"),
-                )
-                .child(setting_row(
-                    "缩放",
-                    format!("{:.1}×", self.zoom),
-                    "zm",
-                    cx,
-                    |a| a.zoom = (a.zoom - 0.1).max(0.3),
-                    |a| a.zoom = (a.zoom + 0.1).min(4.0),
                 ));
             div().flex_1().min_h(px(0.)).overflow_hidden().child(panel)
         };
@@ -892,116 +889,155 @@ impl Render for WriterApp {
         let page_w = page.width;
         let page_h = page.height;
 
-        let preview = div().flex_1().min_w(px(0.)).h_full().p_3().child(
-            canvas(
-                move |_, _, _| {},
-                move |bounds, _state, window, _cx| {
-                    // 裁剪到画布范围：缩放后纸张不会盖住工具栏
-                    let clip = Bounds {
-                        origin: bounds.origin,
-                        size: bounds.size,
-                    };
-                    let __p0 = std::time::Instant::now();
-                    window.with_content_mask(Some(ContentMask { bounds: clip }), |window| {
-                        let avail_w = f32::from(bounds.size.width) - 8.0;
-                        let avail_h = f32::from(bounds.size.height) - 8.0;
-                        let scale = ((avail_w / page_w as f32).min(avail_h / page_h as f32))
-                            .max(0.05)
-                            * zoom;
-                        let paper_w = page_w as f32 * scale;
-                        let paper_h = page_h as f32 * scale;
-                        let ox = f32::from(bounds.origin.x) + (avail_w - paper_w) / 2.0;
-                        let oy = f32::from(bounds.origin.y) + (avail_h - paper_h) / 2.0;
+        let preview = div()
+            .flex_1()
+            .min_w(px(0.))
+            .h_full()
+            .p_3()
+            .on_scroll(cx.listener(|this, ev: &ScrollEvent, _w, cx| {
+                let dy: f32 = match ev.delta {
+                    gpui::ScrollDelta::Pixels(p) => f32::from(p.y) / 50.0,
+                    gpui::ScrollDelta::Lines(p) => p.y,
+                };
+                let step = dy * 0.08;
+                this.zoom = (this.zoom * (1.0 + step)).clamp(0.2, 8.0);
+                cx.notify();
+            }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, ev: &MouseDownEvent, _w, cx| {
+                    this.panning = true;
+                    this.last_mouse = (ev.position.x.into(), ev.position.y.into());
+                    cx.notify();
+                }),
+            )
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _w, cx| {
+                if this.panning {
+                    let x: f32 = ev.position.x.into();
+                    let y: f32 = ev.position.y.into();
+                    this.pan_x += x - this.last_mouse.0;
+                    this.pan_y += y - this.last_mouse.1;
+                    this.last_mouse = (x, y);
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Right,
+                cx.listener(|this, _ev: &MouseUpEvent, _w, cx| {
+                    this.panning = false;
+                    cx.notify();
+                }),
+            )
+            .child(
+                canvas(
+                    move |_, _, _| {},
+                    move |bounds, _state, window, _cx| {
+                        // 裁剪到画布范围：缩放后纸张不会盖住工具栏
+                        let clip = Bounds {
+                            origin: bounds.origin,
+                            size: bounds.size,
+                        };
+                        let __p0 = std::time::Instant::now();
+                        window.with_content_mask(Some(ContentMask { bounds: clip }), |window| {
+                            let avail_w = f32::from(bounds.size.width) - 8.0;
+                            let avail_h = f32::from(bounds.size.height) - 8.0;
+                            let scale = ((avail_w / page_w as f32).min(avail_h / page_h as f32))
+                                .max(0.05)
+                                * zoom;
+                            let paper_w = page_w as f32 * scale;
+                            let paper_h = page_h as f32 * scale;
+                            let ox = f32::from(bounds.origin.x) + (avail_w - paper_w) / 2.0 + pan_x;
+                            let oy = f32::from(bounds.origin.y) + (avail_h - paper_h) / 2.0 + pan_y;
 
-                        window.paint_quad(quad(
-                            Bounds {
-                                origin: point(px(ox), px(oy)),
-                                size: size(px(paper_w), px(paper_h)),
-                            },
-                            px(0.),
-                            gpui::white(),
-                            px(1.),
-                            rgb(0x666666),
-                            Default::default(),
-                        ));
+                            window.paint_quad(quad(
+                                Bounds {
+                                    origin: point(px(ox), px(oy)),
+                                    size: size(px(paper_w), px(paper_h)),
+                                },
+                                px(0.),
+                                gpui::white(),
+                                px(1.),
+                                rgb(0x666666),
+                                Default::default(),
+                            ));
 
-                        // 四边独立的页边距参考框
-                        let ml = page.margin_left as f32 * scale;
-                        let mt = page.margin_top as f32 * scale;
-                        let mr = page.margin_right as f32 * scale;
-                        let mb = page.margin_bottom as f32 * scale;
-                        window.paint_quad(quad(
-                            Bounds {
-                                origin: point(px(ox + ml), px(oy + mt)),
-                                size: size(px(paper_w - ml - mr), px(paper_h - mt - mb)),
-                            },
-                            px(0.),
-                            gpui::transparent_black(),
-                            px(0.5),
-                            rgb(0xdddddd),
-                            Default::default(),
-                        ));
+                            // 四边独立的页边距参考框
+                            let ml = page.margin_left as f32 * scale;
+                            let mt = page.margin_top as f32 * scale;
+                            let mr = page.margin_right as f32 * scale;
+                            let mb = page.margin_bottom as f32 * scale;
+                            window.paint_quad(quad(
+                                Bounds {
+                                    origin: point(px(ox + ml), px(oy + mt)),
+                                    size: size(px(paper_w - ml - mr), px(paper_h - mt - mb)),
+                                },
+                                px(0.),
+                                gpui::transparent_black(),
+                                px(0.5),
+                                rgb(0xdddddd),
+                                Default::default(),
+                            ));
 
-                        // ---- 写字起点：十字 + X/Y 正方向箭头 ----
-                        {
-                            let sx = ox + start_x as f32 * scale;
-                            let sy = oy + start_y as f32 * scale;
-                            let dir_x = if invert_x { -1.0f32 } else { 1.0 };
-                            let dir_y = if invert_y { -1.0f32 } else { 1.0 };
-                            let arm = 26.0f32;
-                            let head = 6.0f32;
-                            let mut cross = PathBuilder::stroke(px(1.4));
-                            // 十字
-                            cross.move_to(point(px(sx - 6.0), px(sy)));
-                            cross.line_to(point(px(sx + 6.0), px(sy)));
-                            cross.move_to(point(px(sx), px(sy - 6.0)));
-                            cross.line_to(point(px(sx), px(sy + 6.0)));
-                            // X 轴箭头
-                            let ex = sx + dir_x * arm;
-                            cross.move_to(point(px(sx), px(sy)));
-                            cross.line_to(point(px(ex), px(sy)));
-                            cross.move_to(point(px(ex), px(sy)));
-                            cross.line_to(point(px(ex - dir_x * head), px(sy - head)));
-                            cross.move_to(point(px(ex), px(sy)));
-                            cross.line_to(point(px(ex - dir_x * head), px(sy + head)));
-                            // Y 轴箭头（机器 +Y 对应纸面向下）
-                            let ey = sy + dir_y * arm;
-                            cross.move_to(point(px(sx), px(sy)));
-                            cross.line_to(point(px(sx), px(ey)));
-                            cross.move_to(point(px(sx), px(ey)));
-                            cross.line_to(point(px(sx - head), px(ey - dir_y * head)));
-                            cross.move_to(point(px(sx), px(ey)));
-                            cross.line_to(point(px(sx + head), px(ey - dir_y * head)));
-                            if let Ok(path) = cross.build() {
-                                window.paint_path(path, rgb(0xd94f4f));
-                            }
-                        }
-                        // 整页笔画合成一条 Path（多子路径）：每帧只 build 一次，
-                        // 比「每笔一个 builder」快一个数量级，长文档才不卡
-                        let line_width = (0.35_f64 * scale as f64).max(0.9) as f32;
-                        let mut builder = PathBuilder::stroke(px(line_width));
-                        for stroke in current.iter() {
-                            if stroke.points.len() < 2 {
-                                continue;
-                            }
-                            for (i, p) in stroke.points.iter().enumerate() {
-                                let x = ox + p.0 as f32 * scale;
-                                let y = oy + (page_h - p.1) as f32 * scale;
-                                if i == 0 {
-                                    builder.move_to(point(px(x), px(y)));
-                                } else {
-                                    builder.line_to(point(px(x), px(y)));
+                            // ---- 写字起点：十字 + X/Y 正方向箭头 ----
+                            {
+                                let sx = ox + start_x as f32 * scale;
+                                let sy = oy + start_y as f32 * scale;
+                                let dir_x = if invert_x { -1.0f32 } else { 1.0 };
+                                let dir_y = if invert_y { -1.0f32 } else { 1.0 };
+                                let arm = 26.0f32;
+                                let head = 6.0f32;
+                                let mut cross = PathBuilder::stroke(px(1.4));
+                                // 十字
+                                cross.move_to(point(px(sx - 6.0), px(sy)));
+                                cross.line_to(point(px(sx + 6.0), px(sy)));
+                                cross.move_to(point(px(sx), px(sy - 6.0)));
+                                cross.line_to(point(px(sx), px(sy + 6.0)));
+                                // X 轴箭头
+                                let ex = sx + dir_x * arm;
+                                cross.move_to(point(px(sx), px(sy)));
+                                cross.line_to(point(px(ex), px(sy)));
+                                cross.move_to(point(px(ex), px(sy)));
+                                cross.line_to(point(px(ex - dir_x * head), px(sy - head)));
+                                cross.move_to(point(px(ex), px(sy)));
+                                cross.line_to(point(px(ex - dir_x * head), px(sy + head)));
+                                // Y 轴箭头（机器 +Y 对应纸面向下）
+                                let ey = sy + dir_y * arm;
+                                cross.move_to(point(px(sx), px(sy)));
+                                cross.line_to(point(px(sx), px(ey)));
+                                cross.move_to(point(px(sx), px(ey)));
+                                cross.line_to(point(px(sx - head), px(ey - dir_y * head)));
+                                cross.move_to(point(px(sx), px(ey)));
+                                cross.line_to(point(px(sx + head), px(ey - dir_y * head)));
+                                if let Ok(path) = cross.build() {
+                                    window.paint_path(path, rgb(0xd94f4f));
                                 }
                             }
-                        }
-                        if let Ok(path) = builder.build() {
-                            window.paint_path(path, rgb(0x111111));
-                        }
-                    });
-                },
-            )
-            .size_full(),
-        );
+                            // 整页笔画合成一条 Path（多子路径）：每帧只 build 一次，
+                            // 比「每笔一个 builder」快一个数量级，长文档才不卡
+                            let line_width = (0.35_f64 * scale as f64).max(0.9) as f32;
+                            let mut builder = PathBuilder::stroke(px(line_width));
+                            for stroke in current.iter() {
+                                if stroke.points.len() < 2 {
+                                    continue;
+                                }
+                                for (i, p) in stroke.points.iter().enumerate() {
+                                    let x = ox + p.0 as f32 * scale;
+                                    let y = oy + (page_h - p.1) as f32 * scale;
+                                    if i == 0 {
+                                        builder.move_to(point(px(x), px(y)));
+                                    } else {
+                                        builder.line_to(point(px(x), px(y)));
+                                    }
+                                }
+                            }
+                            if let Ok(path) = builder.build() {
+                                window.paint_path(path, rgb(0x111111));
+                            }
+                        });
+                    },
+                )
+                .size_full(),
+            );
 
         // ---------------- 右侧机器栏 ----------------
         // 串口 / 波特率：用 Kit 的下拉菜单（Button + PopupMenu）
@@ -1065,16 +1101,16 @@ impl Render for WriterApp {
             .gap_1()
             .p_3()
             .child(div().text_xs().text_color(rgb(0x888888)).child("串口"))
-            .child(port_menu)
-            .child(button(
-                "refresh_ports",
-                "刷新端口",
-                cx,
-                |this, _w, cx| {
-                    this.refresh_ports();
-                    cx.notify();
-                },
-            ))
+            .child(
+                div()
+                    .flex()
+                    .gap_1()
+                    .child(div().w(px(188.)).child(port_menu))
+                    .child(button("refresh_ports", "刷新", cx, |this, _w, cx| {
+                        this.refresh_ports();
+                        cx.notify();
+                    })),
+            )
             .child(baud_menu);
         machine_panel =
             machine_panel
@@ -1209,7 +1245,7 @@ impl Render for WriterApp {
                     .justify_center()
                     .child(jog_button("jog_ym", "Y−", 0.0, -1.0)),
             )
-            // 反向轴 + 暂停/终止（一行放 4 个，省竖向空间）
+            // 反向轴
             .child(
                 div()
                     .flex()
@@ -1232,31 +1268,9 @@ impl Render for WriterApp {
                             this.invert_y = !this.invert_y;
                             cx.notify();
                         },
-                    ))
-                    .child(button(
-                        "pause",
-                        if machine_state.paused {
-                            "继续"
-                        } else {
-                            "暂停"
-                        },
-                        cx,
-                        |this, _w, cx| {
-                            if this.machine.snapshot().paused {
-                                this.machine.send(machine::Cmd::Resume);
-                            } else {
-                                this.machine.send(machine::Cmd::Pause);
-                            }
-                            this.poke();
-                            cx.notify();
-                        },
-                    ))
-                    .child(button("abort", "终止", cx, |this, _w, cx| {
-                        this.machine.send(machine::Cmd::Abort);
-                        this.poke();
-                        cx.notify();
-                    })),
+                    )),
             )
+            .child(div().h(px(1.)).bg(rgb(0x333333)).mt_2())
             .child(
                 div()
                     .mt_2()
@@ -1292,6 +1306,42 @@ impl Render for WriterApp {
                     a.relayout();
                 },
             ))
+            .child(div().h(px(1.)).bg(rgb(0x333333)).mt_2())
+            .child(
+                div()
+                    .mt_1()
+                    .text_xs()
+                    .text_color(rgb(0x888888))
+                    .child("作业"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_1()
+                    .child(button(
+                        "pause",
+                        if machine_state.paused {
+                            "继续"
+                        } else {
+                            "暂停"
+                        },
+                        cx,
+                        |this, _w, cx| {
+                            if this.machine.snapshot().paused {
+                                this.machine.send(machine::Cmd::Resume);
+                            } else {
+                                this.machine.send(machine::Cmd::Pause);
+                            }
+                            this.poke();
+                            cx.notify();
+                        },
+                    ))
+                    .child(button("abort", "终止", cx, |this, _w, cx| {
+                        this.machine.send(machine::Cmd::Abort);
+                        this.poke();
+                        cx.notify();
+                    })),
+            )
             .child(button(
                 "print",
                 "发送作业（打印）",
