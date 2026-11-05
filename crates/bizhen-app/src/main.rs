@@ -14,13 +14,14 @@
 mod machine;
 
 use gpui::{
-    canvas, div, point, prelude::*, px, quad, rgb, size, App, Bounds, ContentMask, Context, Entity,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, Render, ScrollEvent,
-    SharedString, Subscription, WeakEntity, Window, WindowBounds, WindowOptions,
+    canvas, div, point, prelude::*, px, quad, rgb, size, AnyElement, App, Bounds, ContentMask,
+    Context, Entity, Focusable, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    PathBuilder, Render, ScrollEvent, SharedString, Subscription, WeakEntity, Window, WindowBounds,
+    WindowOptions,
 };
 use gpui_kit::component::button::Button;
 use gpui_kit::component::dialog::Dialog;
-use gpui_kit::component::input::{Editor, EditorState, InputEvent};
+use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::WindowExt;
 
@@ -88,6 +89,8 @@ struct WriterApp {
     page_index: usize,
     zoom: f32,
     /// 预览平移（屏幕像素）
+    /// 数值行里可编辑输入框的状态（按行 id 缓存）
+    num_inputs: std::collections::HashMap<&'static str, Entity<InputState>>,
     pan_x: f32,
     pan_y: f32,
     /// 右键拖动中
@@ -164,6 +167,7 @@ impl WriterApp {
             symbols,
             doc: RenderedDoc::default(),
             page_index: 0,
+            num_inputs: std::collections::HashMap::new(),
             pan_x: 0.0,
             pan_y: 0.0,
             panning: false,
@@ -234,6 +238,134 @@ impl WriterApp {
         }
     }
 
+    // ---------------- 数值输入行 ----------------
+
+    fn num_value(&self, id: &str) -> f64 {
+        match id {
+            "pw" => self.page.width,
+            "ph" => self.page.height,
+            "mt" => self.page.margin_top,
+            "mb" => self.page.margin_bottom,
+            "ml" => self.page.margin_left,
+            "mr" => self.page.margin_right,
+            "sz" => self.size_mm,
+            "wr" => self.wrap,
+            "sx" => self.start_x,
+            "sy" => self.start_y,
+            "jog_step" => self.jog_step,
+            "jog_feed" => self.jog_feed,
+            _ => 0.0,
+        }
+    }
+
+    fn set_num(&mut self, id: &str, v: f64) {
+        if !v.is_finite() {
+            return;
+        }
+        match id {
+            "pw" => {
+                self.page.width = v.clamp(40.0, 1000.0);
+                self.preset = None;
+            }
+            "ph" => {
+                self.page.height = v.clamp(40.0, 1000.0);
+                self.preset = None;
+            }
+            "mt" => self.page.margin_top = v.clamp(0.0, 60.0),
+            "mb" => self.page.margin_bottom = v.clamp(0.0, 60.0),
+            "ml" => self.page.margin_left = v.clamp(0.0, 60.0),
+            "mr" => self.page.margin_right = v.clamp(0.0, 60.0),
+            "sz" => self.size_mm = v.clamp(1.5, 20.0),
+            "wr" => self.wrap = v.clamp(20.0, 300.0),
+            "sx" => self.start_x = v.clamp(0.0, self.page.width),
+            "sy" => self.start_y = v.clamp(0.0, self.page.height),
+            "jog_step" => self.jog_step = v.clamp(0.1, 100.0),
+            "jog_feed" => self.jog_feed = v.clamp(10.0, 20000.0),
+            _ => return,
+        }
+        self.relayout();
+    }
+
+    /// 取（或创建）某一行对应的输入框状态；未被聚焦时跟随外部数值刷新。
+    fn num_input(
+        &mut self,
+        id: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<InputState> {
+        let want = format!("{:.1}", self.num_value(id));
+        if let Some(state) = self.num_inputs.get(id) {
+            let focused = state.read(cx).focus_handle(cx).is_focused(window);
+            let text = state.read(cx).value().to_string();
+            if !focused && text != want {
+                state.update(cx, |s, cx| s.set_value(want, window, cx));
+            }
+            return state.clone();
+        }
+        let state = cx.new(|cx| InputState::new(window, cx).default_value(want));
+        cx.subscribe_in(
+            &state,
+            window,
+            move |app: &mut WriterApp, state, ev: &InputEvent, _w, cx| {
+                if matches!(ev, InputEvent::Change | InputEvent::PressEnter { .. }) {
+                    let text = state.read(cx).value().to_string();
+                    if let Ok(v) = text.trim().parse::<f64>() {
+                        app.set_num(id, v);
+                    }
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
+        self.num_inputs.insert(id, state.clone());
+        state
+    }
+
+    /// 一行数值设置：标签 + [−] + 输入框 + [＋]
+    fn num_row(
+        &mut self,
+        id: &'static str,
+        label: &str,
+        step: f64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let state = self.num_input(id, window, cx);
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .py_0p5()
+            .child(
+                div()
+                    .w(px(86.))
+                    .text_xs()
+                    .text_color(rgb(0xb0b0b0))
+                    .child(label.to_string()),
+            )
+            .child(button(
+                &format!("{id}_dec"),
+                "−",
+                cx,
+                move |this, _w, cx| {
+                    let v = this.num_value(id) - step;
+                    this.set_num(id, v);
+                    cx.notify();
+                },
+            ))
+            .child(div().w(px(70.)).child(Input::new(&state)))
+            .child(button(
+                &format!("{id}_inc"),
+                "＋",
+                cx,
+                move |this, _w, cx| {
+                    let v = this.num_value(id) + step;
+                    this.set_num(id, v);
+                    cx.notify();
+                },
+            ))
+            .into_any_element()
+    }
     fn effective_page(&self) -> PageSpec {
         let (w, h) = if self.landscape {
             (self.page.height, self.page.width)
@@ -721,38 +853,8 @@ impl Render for WriterApp {
                         cx.notify();
                     },
                 ))
-                .child(setting_row(
-                    "纸宽 (mm)",
-                    format!("{:.1}", self.page.width),
-                    "pw",
-                    cx,
-                    |a| {
-                        a.page.width = (a.page.width - 5.0).max(40.0);
-                        a.preset = None;
-                        a.relayout();
-                    },
-                    |a| {
-                        a.page.width = (a.page.width + 5.0).min(1000.0);
-                        a.preset = None;
-                        a.relayout();
-                    },
-                ))
-                .child(setting_row(
-                    "纸高 (mm)",
-                    format!("{:.1}", self.page.height),
-                    "ph",
-                    cx,
-                    |a| {
-                        a.page.height = (a.page.height - 5.0).max(40.0);
-                        a.preset = None;
-                        a.relayout();
-                    },
-                    |a| {
-                        a.page.height = (a.page.height + 5.0).min(1000.0);
-                        a.preset = None;
-                        a.relayout();
-                    },
-                ))
+                .child(self.num_row("pw", "纸宽 (mm)", 5.0, window, cx))
+                .child(self.num_row("ph", "纸高 (mm)", 5.0, window, cx))
                 .child(
                     div()
                         .mt_2()
@@ -760,62 +862,10 @@ impl Render for WriterApp {
                         .text_color(rgb(0x888888))
                         .child("页边距（四边独立）"),
                 )
-                .child(setting_row(
-                    "上 (mm)",
-                    format!("{:.1}", self.page.margin_top),
-                    "mt",
-                    cx,
-                    |a| {
-                        a.page.margin_top = (a.page.margin_top - 1.0).max(0.0);
-                        a.relayout();
-                    },
-                    |a| {
-                        a.page.margin_top = (a.page.margin_top + 1.0).min(60.0);
-                        a.relayout();
-                    },
-                ))
-                .child(setting_row(
-                    "下 (mm)",
-                    format!("{:.1}", self.page.margin_bottom),
-                    "mb",
-                    cx,
-                    |a| {
-                        a.page.margin_bottom = (a.page.margin_bottom - 1.0).max(0.0);
-                        a.relayout();
-                    },
-                    |a| {
-                        a.page.margin_bottom = (a.page.margin_bottom + 1.0).min(60.0);
-                        a.relayout();
-                    },
-                ))
-                .child(setting_row(
-                    "左 (mm)",
-                    format!("{:.1}", self.page.margin_left),
-                    "ml",
-                    cx,
-                    |a| {
-                        a.page.margin_left = (a.page.margin_left - 1.0).max(0.0);
-                        a.relayout();
-                    },
-                    |a| {
-                        a.page.margin_left = (a.page.margin_left + 1.0).min(60.0);
-                        a.relayout();
-                    },
-                ))
-                .child(setting_row(
-                    "右 (mm)",
-                    format!("{:.1}", self.page.margin_right),
-                    "mr",
-                    cx,
-                    |a| {
-                        a.page.margin_right = (a.page.margin_right - 1.0).max(0.0);
-                        a.relayout();
-                    },
-                    |a| {
-                        a.page.margin_right = (a.page.margin_right + 1.0).min(60.0);
-                        a.relayout();
-                    },
-                ))
+                .child(self.num_row("mt", "上 (mm)", 1.0, window, cx))
+                .child(self.num_row("mb", "下 (mm)", 1.0, window, cx))
+                .child(self.num_row("ml", "左 (mm)", 1.0, window, cx))
+                .child(self.num_row("mr", "右 (mm)", 1.0, window, cx))
                 .child(
                     div()
                         .mt_2()
@@ -823,34 +873,8 @@ impl Render for WriterApp {
                         .text_color(rgb(0x888888))
                         .child("排版"),
                 )
-                .child(setting_row(
-                    "字号 (mm)",
-                    format!("{:.1}", self.size_mm),
-                    "sz",
-                    cx,
-                    |a| {
-                        a.size_mm = (a.size_mm - 0.5).max(1.5);
-                        a.relayout();
-                    },
-                    |a| {
-                        a.size_mm = (a.size_mm + 0.5).min(20.0);
-                        a.relayout();
-                    },
-                ))
-                .child(setting_row(
-                    "折行宽 (mm)",
-                    format!("{:.0}", self.wrap),
-                    "wr",
-                    cx,
-                    |a| {
-                        a.wrap = (a.wrap - 10.0).max(20.0);
-                        a.relayout();
-                    },
-                    |a| {
-                        a.wrap = (a.wrap + 10.0).min(400.0);
-                        a.relayout();
-                    },
-                ))
+                .child(self.num_row("sz", "字号 (mm)", 0.5, window, cx))
+                .child(self.num_row("wr", "折行宽 (mm)", 10.0, window, cx))
                 .child(setting_row(
                     "表格宽 (mm)",
                     if self.table_width <= 0.0 {
@@ -1183,33 +1207,22 @@ impl Render for WriterApp {
                         .text_color(rgb(0x888888))
                         .child("手动控制"),
                 )
-                .child(setting_row(
-                    "步长 (mm)",
-                    format!("{:.1}", self.jog_step),
-                    "jog_step",
-                    cx,
-                    |a| a.jog_step = (a.jog_step / 2.0).max(0.1),
-                    |a| a.jog_step = (a.jog_step * 2.0).min(100.0),
-                ))
-                .child(setting_row(
-                    "速度 (mm/min)",
-                    format!("{:.0}", self.jog_feed),
-                    "jog_feed",
-                    cx,
-                    |a| a.jog_feed = (a.jog_feed - 250.0).max(10.0),
-                    |a| a.jog_feed = (a.jog_feed + 250.0).min(20000.0),
-                ));
+                .child(self.num_row("jog_step", "步长 (mm)", 1.0, window, cx))
+                .child(self.num_row("jog_feed", "速度 (mm/min)", 250.0, window, cx));
 
         // 方向键按十字排：上 / 左·右 / 下
         let jog_button = |id: &str, label: &str, dx: f64, dy: f64| {
             div()
                 .id(SharedString::from(id.to_string()))
-                .w(px(56.))
-                .py_2()
+                .w(px(52.))
+                .py_1()
                 .rounded_md()
                 .bg(rgb(0x3a3a3a))
                 .text_xs()
                 .text_color(rgb(0xe0e0e0))
+                .flex()
+                .items_center()
+                .justify_center()
                 .hover(|s| s.bg(rgb(0x4a4a4a)))
                 .child(label.to_string())
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -1278,34 +1291,8 @@ impl Render for WriterApp {
                     .text_color(rgb(0x888888))
                     .child("写字起点（距纸面左上角）"),
             )
-            .child(setting_row(
-                "起点 X (mm)",
-                format!("{:.1}", self.start_x),
-                "sx",
-                cx,
-                |a| {
-                    a.start_x = (a.start_x - 5.0).max(0.0);
-                    a.relayout();
-                },
-                |a| {
-                    a.start_x = (a.start_x + 5.0).min(a.page.width);
-                    a.relayout();
-                },
-            ))
-            .child(setting_row(
-                "起点 Y (mm)",
-                format!("{:.1}", self.start_y),
-                "sy",
-                cx,
-                |a| {
-                    a.start_y = (a.start_y - 5.0).max(0.0);
-                    a.relayout();
-                },
-                |a| {
-                    a.start_y = (a.start_y + 5.0).min(a.page.height);
-                    a.relayout();
-                },
-            ))
+            .child(self.num_row("sx", "起点 X (mm)", 5.0, window, cx))
+            .child(self.num_row("sy", "起点 Y (mm)", 5.0, window, cx))
             .child(div().h(px(1.)).bg(rgb(0x333333)).mt_2())
             .child(
                 div()
