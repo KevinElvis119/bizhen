@@ -134,6 +134,9 @@ pub struct GCodeConfig {
     pub swap_xy: bool,
     pub invert_x: bool,
     pub invert_y: bool,
+    /// 写字起点（页面坐标，y 向上）。`None` = 页面左上角（机械原点对齐纸角）。
+    /// 有值时该点在机器坐标里落到 (0,0)，即「笔尖所在处就是纸上的这个点」。
+    pub start_point: Option<Vec2>,
     pub origin_corner: OriginCorner,
     pub simplify_mm: f64,
     pub stroke_taper_mm: f64,
@@ -170,6 +173,7 @@ impl Default for GCodeConfig {
             swap_xy: false,
             invert_x: false,
             invert_y: false,
+            start_point: None,
             origin_corner: OriginCorner::None,
             simplify_mm: 0.0,
             stroke_taper_mm: 1.5,
@@ -424,25 +428,34 @@ pub fn generate(
         if groups.iter().any(|g| *g >= 0) {
             use_strokes = order_reading(&use_strokes, &groups);
         } else {
-            use_strokes = order_shortest(&use_strokes, start_point);
+            use_strokes = order_shortest(&use_strokes, start_point.or(cfg.start_point));
         }
     } else {
-        use_strokes = order_shortest(&use_strokes, start_point);
+        use_strokes = order_shortest(&use_strokes, start_point.or(cfg.start_point));
     }
 
     let map =
         |p: Vec2| -> Vec2 { page_to_machine(p, page_h, cfg.swap_xy, cfg.invert_x, cfg.invert_y) };
+    // 写字起点：把该页面点平移到机器原点，整份内容做同一个刚体平移
+    let origin_off = match start_point.or(cfg.start_point) {
+        Some(s) => {
+            let m = map(s);
+            (-m.0, -m.1)
+        }
+        None => (0.0, 0.0),
+    };
+    let shift = |p: Vec2| -> Vec2 { (p.0 + origin_off.0, p.1 + origin_off.1) };
     let mapped: Vec<Vec<Vec2>> = use_strokes
         .iter()
-        .map(|s| s.points.iter().map(|p| map(*p)).collect())
+        .map(|s| s.points.iter().map(|p| shift(map(*p))).collect())
         .collect();
 
     let mut lines: Vec<String> = Vec::new();
     lines.extend(cfg.header.iter().cloned());
     lines.extend(GCodeConfig::split_custom(&cfg.custom_start_gcode));
 
-    let (sx, sy) = match start_point {
-        Some(p) => map(p),
+    let (sx, sy) = match start_point.or(cfg.start_point) {
+        Some(p) => shift(map(p)),
         None => mapped[0][0],
     };
 

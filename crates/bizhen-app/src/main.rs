@@ -94,6 +94,9 @@ struct WriterApp {
     port_idx: usize,
     baud_idx: usize,
     /// 反转 X 轴（原点在右上角一侧的机型）
+    /// 写字起点（页面左上角起算，mm）
+    start_x: f64,
+    start_y: f64,
     invert_x: bool,
     /// 反转 Y 轴（原点在左下角一侧的机型）
     invert_y: bool,
@@ -164,8 +167,15 @@ impl WriterApp {
             ports: serial::list_ports(),
             port_idx: 0,
             baud_idx: 4, // 115200
-            invert_x: false,
-            invert_y: false,
+            start_x: 0.0,
+            start_y: 0.0,
+            // 冒烟/演示：BIZHEN_DEMO_INVERT=x 或 y 或 xy
+            invert_x: std::env::var("BIZHEN_DEMO_INVERT")
+                .map(|v| v.contains('x'))
+                .unwrap_or(false),
+            invert_y: std::env::var("BIZHEN_DEMO_INVERT")
+                .map(|v| v.contains('y'))
+                .unwrap_or(false),
             jog_step: 10.0,
             jog_feed: 2500.0,
             poll_frames: 0,
@@ -204,9 +214,12 @@ impl WriterApp {
 
     /// 按界面上的轴设置构造 G-code 配置。
     fn gcode_config(&self) -> GCodeConfig {
+        let page_h = self.effective_page().height;
         GCodeConfig {
             invert_x: self.invert_x,
             invert_y: self.invert_y,
+            // 界面用「距纸面左上角」的毫米数，换算成页面坐标（y 向上）
+            start_point: Some((self.start_x, page_h - self.start_y)),
             ..GCodeConfig::default()
         }
     }
@@ -528,6 +541,8 @@ impl Render for WriterApp {
         let tab = self.tab;
         let invert_x = self.invert_x;
         let invert_y = self.invert_y;
+        let start_x = self.start_x;
+        let start_y = self.start_y;
         let machine_state = self.machine.snapshot();
         let port_name = self
             .ports
@@ -927,6 +942,40 @@ impl Render for WriterApp {
                             Default::default(),
                         ));
 
+                        // ---- 写字起点：十字 + X/Y 正方向箭头 ----
+                        {
+                            let sx = ox + start_x as f32 * scale;
+                            let sy = oy + start_y as f32 * scale;
+                            let dir_x = if invert_x { -1.0f32 } else { 1.0 };
+                            let dir_y = if invert_y { -1.0f32 } else { 1.0 };
+                            let arm = 26.0f32;
+                            let head = 6.0f32;
+                            let mut cross = PathBuilder::stroke(px(1.4));
+                            // 十字
+                            cross.move_to(point(px(sx - 6.0), px(sy)));
+                            cross.line_to(point(px(sx + 6.0), px(sy)));
+                            cross.move_to(point(px(sx), px(sy - 6.0)));
+                            cross.line_to(point(px(sx), px(sy + 6.0)));
+                            // X 轴箭头
+                            let ex = sx + dir_x * arm;
+                            cross.move_to(point(px(sx), px(sy)));
+                            cross.line_to(point(px(ex), px(sy)));
+                            cross.move_to(point(px(ex), px(sy)));
+                            cross.line_to(point(px(ex - dir_x * head), px(sy - head)));
+                            cross.move_to(point(px(ex), px(sy)));
+                            cross.line_to(point(px(ex - dir_x * head), px(sy + head)));
+                            // Y 轴箭头（机器 +Y 对应纸面向下）
+                            let ey = sy + dir_y * arm;
+                            cross.move_to(point(px(sx), px(sy)));
+                            cross.line_to(point(px(sx), px(ey)));
+                            cross.move_to(point(px(sx), px(ey)));
+                            cross.line_to(point(px(sx - head), px(ey - dir_y * head)));
+                            cross.move_to(point(px(sx), px(ey)));
+                            cross.line_to(point(px(sx + head), px(ey - dir_y * head)));
+                            if let Ok(path) = cross.build() {
+                                window.paint_path(path, rgb(0xd94f4f));
+                            }
+                        }
                         // 整页笔画合成一条 Path（多子路径）：每帧只 build 一次，
                         // 比「每笔一个 builder」快一个数量级，长文档才不卡
                         let line_width = (0.35_f64 * scale as f64).max(0.9) as f32;
@@ -1208,6 +1257,41 @@ impl Render for WriterApp {
                         cx.notify();
                     })),
             )
+            .child(
+                div()
+                    .mt_2()
+                    .text_xs()
+                    .text_color(rgb(0x888888))
+                    .child("写字起点（距纸面左上角）"),
+            )
+            .child(setting_row(
+                "起点 X (mm)",
+                format!("{:.1}", self.start_x),
+                "sx",
+                cx,
+                |a| {
+                    a.start_x = (a.start_x - 5.0).max(0.0);
+                    a.relayout();
+                },
+                |a| {
+                    a.start_x = (a.start_x + 5.0).min(a.page.width);
+                    a.relayout();
+                },
+            ))
+            .child(setting_row(
+                "起点 Y (mm)",
+                format!("{:.1}", self.start_y),
+                "sy",
+                cx,
+                |a| {
+                    a.start_y = (a.start_y - 5.0).max(0.0);
+                    a.relayout();
+                },
+                |a| {
+                    a.start_y = (a.start_y + 5.0).min(a.page.height);
+                    a.relayout();
+                },
+            ))
             .child(button(
                 "print",
                 "发送作业（打印）",

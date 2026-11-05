@@ -144,6 +144,8 @@ fn cmd_md(args: &[String]) -> ExitCode {
     let mut landscape = false;
     let mut style = MarkdownStyle::default();
     let mut font_names: Vec<String> = Vec::new();
+    let mut origin_x = 0.0_f64;
+    let mut origin_y = 0.0_f64;
     let mut invert_x = false;
     let mut invert_y = false;
     let mut jitter_preset: Option<String> = None;
@@ -165,6 +167,18 @@ fn cmd_md(args: &[String]) -> ExitCode {
                 }
             }
             "--landscape" => landscape = true,
+            "--origin-x" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse::<f64>().ok()) {
+                    origin_x = v;
+                }
+            }
+            "--origin-y" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse::<f64>().ok()) {
+                    origin_y = v;
+                }
+            }
             "--invert-x" => {
                 invert_x = true;
             }
@@ -306,6 +320,7 @@ fn cmd_md(args: &[String]) -> ExitCode {
             let cfg = GCodeConfig {
                 invert_x,
                 invert_y,
+                start_point: Some((origin_x, page.height - origin_y)),
                 ..GCodeConfig::default()
             };
             let result = gcode::generate(&strokes, &cfg, page.height, None);
