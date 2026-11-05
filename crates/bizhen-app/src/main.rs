@@ -77,6 +77,10 @@ struct WriterApp {
     jitter: JitterParams,
     /// 冒烟/演示：BIZHEN_DEMO_DIALOG=1 时首帧自动打开弹窗
     auto_dialog: bool,
+    /// 异步对话框选好的待打开文件（文本, 显示名）
+    pending_open: Option<(String, String)>,
+    /// 异步对话框选好的待导入字体
+    pending_font: Option<std::path::PathBuf>,
     font_page: usize,
 
     symbols: SymbolFonts,
@@ -141,6 +145,8 @@ impl WriterApp {
             jitter: JitterParams::default(),
             // 演示/冒烟：BIZHEN_DEMO_DIALOG=1 启动即打开弹窗
             auto_dialog: std::env::var("BIZHEN_DEMO_DIALOG").is_ok(),
+            pending_open: None,
+            pending_font: None,
             font_page: 0,
             symbols,
             doc: RenderedDoc::default(),
@@ -171,6 +177,12 @@ impl WriterApp {
             },
         ));
         app.relayout();
+        // 冒烟/演示：BIZHEN_DEMO_OPEN=路径 启动即走一次「打开文件」流程
+        if let Ok(path) = std::env::var("BIZHEN_DEMO_OPEN") {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                app.pending_open = Some((text, path.clone()));
+            }
+        }
         // 冒烟/演示：BIZHEN_DEMO_CONNECT=1 启动即连接第一个串口
         if std::env::var("BIZHEN_DEMO_CONNECT").is_ok() {
             if let Some(port) = app.ports.first().map(|p| p.name.clone()) {
@@ -236,13 +248,25 @@ impl WriterApp {
         .into();
     }
 
-    fn import_font(&mut self) -> String {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("单线字体", &["gfont", "jhf", "json"])
-            .pick_file()
-        else {
-            return "已取消".into();
-        };
+    /// 选字体文件（异步对话框，避免模态重入导致崩溃）。
+    fn import_font(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let picked = rfd::AsyncFileDialog::new()
+                .add_filter("单线字体", &["gfont", "jhf", "json"])
+                .pick_file()
+                .await;
+            let Some(handle) = picked else { return };
+            let path = handle.path().to_path_buf();
+            let _ = this.update(cx, |app: &mut WriterApp, cx| {
+                app.pending_font = Some(path);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 把选好的字体拷进用户字库并刷新。
+    fn do_import_font(&mut self, path: std::path::PathBuf) -> String {
         let dir = bizhen_core::font::registry::user_font_dir();
         if let Err(e) = std::fs::create_dir_all(&dir) {
             return format!("创建字库目录失败：{e}");
@@ -260,46 +284,59 @@ impl WriterApp {
     }
 
     // -- 操作 ---------------------------------------------------------------
-    fn open_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Markdown", &["md", "markdown", "txt"])
-            .pick_file()
-        {
-            match std::fs::read_to_string(&path) {
-                Ok(text) => {
-                    self.source = text.clone();
-                    // 换掉编辑器里的内容（不触发 Change，手动重排一次）
-                    self.editor
-                        .update(cx, |s, cx| s.set_value(text, window, cx));
-                    self.relayout();
-                    self.status = format!("已打开 {}", path.display()).into();
+    /// 打开文件：用异步对话框，避免在实体更新中跑 Windows 模态循环
+    /// （之前第二次点「打开」会因为重入而崩）。
+    fn open_file(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let picked = rfd::AsyncFileDialog::new()
+                .add_filter("Markdown", &["md", "markdown", "txt"])
+                .pick_file()
+                .await;
+            let Some(handle) = picked else { return };
+            let path = handle.path().to_path_buf();
+            let text = std::fs::read_to_string(&path);
+            let _ = this.update(cx, |app: &mut WriterApp, cx| {
+                match text {
+                    Ok(text) => {
+                        // 真正写进编辑器要 Window，放到下一帧 render 里做
+                        app.pending_open = Some((text, path.display().to_string()));
+                    }
+                    Err(e) => app.status = format!("打开失败：{e}").into(),
                 }
-                Err(e) => self.status = format!("打开失败：{e}").into(),
-            }
-        }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
-    fn export_gcode(&mut self) {
+    /// 导出 G-code：同样用异步保存对话框。
+    fn export_gcode(&mut self, cx: &mut Context<Self>) {
         let page = self.effective_page();
         let cfg = GCodeConfig::default();
         let result = gcode::generate(&self.doc.strokes(), &cfg, page.height, None);
-        if let Some(path) = rfd::FileDialog::new()
-            .set_file_name("bizhen.gcode")
-            .save_file()
-        {
-            match std::fs::write(&path, result.text()) {
-                Ok(_) => {
-                    self.status = format!(
-                        "已导出 {} · 绘制 {:.1} mm · 预计 {}",
-                        path.display(),
-                        result.draw_length,
-                        gcode::format_duration(result.estimated_seconds)
-                    )
-                    .into();
-                }
-                Err(e) => self.status = format!("导出失败：{e}").into(),
-            }
-        }
+        let text = result.text().to_string();
+        let summary = format!(
+            "绘制 {:.1} mm · 预计 {}",
+            result.draw_length,
+            gcode::format_duration(result.estimated_seconds)
+        );
+        cx.spawn(async move |this, cx| {
+            let picked = rfd::AsyncFileDialog::new()
+                .set_file_name("bizhen.gcode")
+                .save_file()
+                .await;
+            let Some(handle) = picked else { return };
+            let path = handle.path().to_path_buf();
+            let res = std::fs::write(&path, text);
+            let _ = this.update(cx, |app: &mut WriterApp, cx| {
+                app.status = match res {
+                    Ok(()) => format!("已导出 {} · {summary}", path.display()).into(),
+                    Err(e) => format!("导出失败：{e}").into(),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn refresh_ports(&mut self) {
@@ -438,6 +475,20 @@ fn setting_row(
 
 impl Render for WriterApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let __perf = std::env::var("BIZHEN_PERF").is_ok();
+        let __t0 = std::time::Instant::now();
+        // 异步对话框选好的文件在这里落盘/落编辑器（此处才有 Window）
+        if let Some(path) = self.pending_font.take() {
+            self.status = self.do_import_font(path).into();
+        }
+        if let Some((text, name)) = self.pending_open.take() {
+            self.source = text.clone();
+            self.editor
+                .update(cx, |s, cx| s.set_value(text, window, cx));
+            self.relayout();
+            self.status = format!("已打开 {name}").into();
+        }
+
         let page = self.effective_page();
         let current: Vec<Stroke> = self
             .doc
@@ -482,11 +533,11 @@ impl Render for WriterApp {
             )
             .child(div().flex_1())
             .child(button("open", "打开…", cx, |this, w, cx| {
-                this.open_file(w, cx);
+                this.open_file(cx);
                 cx.notify();
             }))
             .child(button("export", "导出 G-code", cx, |this, _w, cx| {
-                this.export_gcode();
+                this.export_gcode(cx);
                 cx.notify();
             }))
             .child(button(
@@ -814,6 +865,7 @@ impl Render for WriterApp {
                         origin: bounds.origin,
                         size: bounds.size,
                     };
+                    let __p0 = std::time::Instant::now();
                     window.with_content_mask(Some(ContentMask { bounds: clip }), |window| {
                         let avail_w = f32::from(bounds.size.width) - 8.0;
                         let avail_h = f32::from(bounds.size.height) - 8.0;
@@ -854,12 +906,14 @@ impl Render for WriterApp {
                             Default::default(),
                         ));
 
+                        // 整页笔画合成一条 Path（多子路径）：每帧只 build 一次，
+                        // 比「每笔一个 builder」快一个数量级，长文档才不卡
                         let line_width = (0.35_f64 * scale as f64).max(0.9) as f32;
-                        for stroke in &current {
+                        let mut builder = PathBuilder::stroke(px(line_width));
+                        for stroke in current.iter() {
                             if stroke.points.len() < 2 {
                                 continue;
                             }
-                            let mut builder = PathBuilder::stroke(px(line_width));
                             for (i, p) in stroke.points.iter().enumerate() {
                                 let x = ox + p.0 as f32 * scale;
                                 let y = oy + (page_h - p.1) as f32 * scale;
@@ -869,9 +923,9 @@ impl Render for WriterApp {
                                     builder.line_to(point(px(x), px(y)));
                                 }
                             }
-                            if let Ok(path) = builder.build() {
-                                window.paint_path(path, rgb(0x111111));
-                            }
+                        }
+                        if let Ok(path) = builder.build() {
+                            window.paint_path(path, rgb(0x111111));
                         }
                     });
                 },
@@ -1158,6 +1212,13 @@ impl Render for WriterApp {
             open_style_dialog(window, cx);
         }
 
+        if __perf {
+            eprintln!(
+                "[perf] render {:.1} ms",
+                __t0.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+
         // 已连接或刚发过机器命令时刷新状态（只在没有现成链时起一条）
         if (machine_state.connected || machine_state.pending || self.poll_frames > 0)
             && !self.ticking
@@ -1385,7 +1446,7 @@ fn build_style_dialog(dialog: Dialog, weak: &WeakEntity<WriterApp>, cx: &mut App
             cx.notify();
         }))
         .child(wb(weak, "import_font", "导入字体…", |this, cx| {
-            this.status = this.import_font().into();
+            this.import_font(cx);
             cx.notify();
         }));
 

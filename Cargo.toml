@@ -22,3 +22,12 @@ thiserror = "2.0"
 opt-level = 3
 lto = "thin"
 codegen-units = 4
+
+# 排版引擎在 debug 下慢 3 倍以上（35 页文档 2.9s vs release 0.9s）。
+# 默认成员里只有 CLI 会跑重排版，给 core 单独开优化即可，编译时间影响可控。
+[profile.dev.package.bizhen-core]
+opt-level = 3
+# 依赖（gpui、tree-sitter 等）在 debug 下是纯 -O0，编辑器高亮与绘制都会明显卡。
+# 只给依赖开优化，自己的 crate 保持 debug 便于调试。
+[profile.dev.package."*"]
+opt-level = 2

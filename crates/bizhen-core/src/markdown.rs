@@ -1611,6 +1611,46 @@ pub fn render_markdown(
 }
 
 #[cfg(test)]
+mod perf {
+    use super::*;
+    use crate::font::FontRegistry;
+    use crate::symbols::SymbolFonts;
+
+    #[test]
+    fn perf_many_paragraphs() {
+        let mut reg = FontRegistry::builtin();
+        let mut fonts = Vec::new();
+        if let Some(f) = reg.get("STRK-Kaiti") {
+            fonts.push(f.clone());
+        }
+        if let Some(f) = reg.get("futural") {
+            fonts.push(f.clone());
+        }
+        let symbols = SymbolFonts::load();
+        let style = MarkdownStyle::default();
+        let page = PageSpec::a4();
+        for n in [20usize, 60, 120, 300] {
+            let mut src = String::new();
+            for i in 1..=n {
+                src.push_str(&format!(
+                    "## 第 {i} 节\n\n床前明月光，疑是地上霜。举头望明月，低头思故乡。这是第 {i} 段。\n\n"
+                ));
+            }
+            let t = std::time::Instant::now();
+            let doc = render_markdown(&src, &fonts, &symbols, &style, page);
+            let el = t.elapsed();
+            let strokes: usize = doc.pages.iter().map(|p| p.strokes.len()).sum();
+            eprintln!(
+                "段落 {n:>4}: {:>6} ms, {} 页, {} 笔画",
+                el.as_millis(),
+                doc.pages.len(),
+                strokes
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::font::FontRegistry;

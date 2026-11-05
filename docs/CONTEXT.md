@@ -359,3 +359,46 @@ CLI 也支持：`--margin-top/--margin-bottom/--margin-left/--margin-right`；
 实测（`--margin-top 35 --margin-bottom 5 --margin-left 45 --margin-right 8`）：
 JSON 的 page 四边正确，墨水范围 x 44.55..141.96（左边距 45，含字形外扩 0.45mm）、
 y 169.59..261.85（上边距 35 → 顶边 262）。
+---
+
+## 14. 长文档卡顿与「第二次打开崩溃」（2026-11-05 夜）
+
+### 卡顿：不是排版慢，是每帧建几千条 Path
+
+进程内实测（`cargo test -p bizhen-core perf_many_paragraphs`）：
+
+| 段落 | 页数 | 笔画 | 渲染耗时 |
+|---|---|---|---|
+| 20 | 2 | 4690 | 2 ms |
+| 60 | 6 | 14126 | 3 ms |
+| 120 | 11 | 28312 | 6 ms |
+| 300 | 28 | 71124 | 15 ms |
+
+`render_markdown` 一点都不慢（15 ms），所以问题在绘制：原来**每条笔画各建一个
+`PathBuilder` 再 paint 一次**，一页两三千条就是两三千次 build。改成把整页合成
+**一条多子路径的 Path**，每帧只 build 一次、paint 一次。
+
+另外 debug 下依赖（gpui、tree-sitter）是纯 `-O0`，编辑器高亮、文字整形都慢。
+workspace 加了：
+
+```toml
+[profile.dev.package.bizhen-core]
+opt-level = 3
+[profile.dev.package."*"]
+opt-level = 2
+```
+
+只给依赖和排版引擎开优化，自己的 app crate 保持 debug。debug exe 50 → 35 MB。
+
+### 崩溃：模态文件对话框在实体更新里跑
+
+`rfd::FileDialog::pick_file()` 会跑 Windows 自己的模态消息循环。它是在
+`WeakEntity::update`（`&mut WriterApp` 借出期间）里调用的，模态循环期间窗口消息
+回来会重入 gpui 的借用检查 —— 第一次能撑过去，第二次就崩。
+
+改成 `rfd::AsyncFileDialog`：`cx.spawn` 里 await 选择结果，回到 UI 线程只写
+`pending_open` / `pending_font`，真正落编辑器（需要 `&mut Window`）放到下一帧
+`render` 开头做。导出 G-code 与导入字体同样处理。
+
+冒烟钩子：`BIZHEN_DEMO_OPEN=路径` 启动即走一次「打开文件」流程；
+`BIZHEN_PERF=1` 打印每次 render / canvas 耗时。
