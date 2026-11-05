@@ -64,9 +64,9 @@ struct WriterApp {
     _editor_sub: Option<Subscription>,
     tab: Tab,
 
-    preset: usize,
+    /// 当前纸张预设；None 表示自定义尺寸
+    preset: Option<usize>,
     landscape: bool,
-    margin: f64,
     size_mm: f64,
     wrap: f64,
     table_width: f64,
@@ -101,11 +101,7 @@ impl WriterApp {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let registry = FontRegistry::builtin();
         let symbols = SymbolFonts::load();
-        let page = PageSpec {
-            width: PRESETS[0].1,
-            height: PRESETS[0].2,
-            margin: PRESETS[0].3,
-        };
+        let page = PageSpec::with_margin(PRESETS[0].1, PRESETS[0].2, PRESETS[0].3);
         let mut font_names: Vec<String> = Vec::new();
         for want in ["STRK-Kaiti", "futural"] {
             if registry.get_entry(want).is_some() {
@@ -134,9 +130,8 @@ impl WriterApp {
             } else {
                 Tab::Markdown
             },
-            preset: 0,
+            preset: Some(0),
             landscape: false,
-            margin: page.margin,
             size_mm: 4.0,
             wrap: 160.0,
             table_width: 0.0,
@@ -198,7 +193,7 @@ impl WriterApp {
         PageSpec {
             width: w,
             height: h,
-            margin: self.margin,
+            ..self.page
         }
     }
 
@@ -455,7 +450,10 @@ impl Render for WriterApp {
         let status = self.status.clone();
         let size_mm_footer = self.size_mm;
         let wrap_footer = self.wrap;
-        let preset_name = PRESETS[self.preset].0;
+        let preset_name = match self.preset {
+            Some(i) => PRESETS[i.min(PRESETS.len() - 1)].0,
+            None => "自定义",
+        };
         let landscape = self.landscape;
         let tab = self.tab;
         let machine_state = self.machine.snapshot();
@@ -568,26 +566,48 @@ impl Render for WriterApp {
                     .text_size(px(EDITOR_TEXT_SIZE)),
             )
         } else {
+            // 纸张：Kit 下拉菜单（预设 + 自定义）
+            let paper_menu = {
+                let weak = cx.entity().downgrade();
+                let selected = self.preset;
+                Button::new("paper")
+                    .label(format!("纸张 {preset_name} ▾"))
+                    .dropdown_menu(move |mut menu, _, _| {
+                        for (i, (name, w, h, m)) in PRESETS.iter().enumerate() {
+                            let weak = weak.clone();
+                            let (w, h, m) = (*w, *h, *m);
+                            menu = menu.item(
+                                PopupMenuItem::new((*name).to_string())
+                                    .checked(selected == Some(i))
+                                    .on_click(move |_, _, cx| {
+                                        let _ = weak.update(cx, |app: &mut WriterApp, cx| {
+                                            app.preset = Some(i);
+                                            app.page = PageSpec::with_margin(w, h, m);
+                                            app.relayout();
+                                            cx.notify();
+                                        });
+                                    }),
+                            );
+                        }
+                        let weak_c = weak.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new("自定义")
+                                .checked(selected.is_none())
+                                .on_click(move |_, _, cx| {
+                                    let _ = weak_c.update(cx, |app: &mut WriterApp, cx| {
+                                        app.preset = None;
+                                        cx.notify();
+                                    });
+                                }),
+                        );
+                        menu
+                    })
+            };
+
             let mut panel = div().flex().flex_col().gap_1().p_3();
             panel = panel
                 .child(div().text_xs().text_color(rgb(0x888888)).child("纸张"))
-                .child(button(
-                    "preset",
-                    format!("纸张 {preset_name}（点击切换）"),
-                    cx,
-                    move |this, _w, cx| {
-                        this.preset = (this.preset + 1) % PRESETS.len();
-                        let (_, w, h, m) = PRESETS[this.preset];
-                        this.page = PageSpec {
-                            width: w,
-                            height: h,
-                            margin: m,
-                        };
-                        this.margin = m;
-                        this.relayout();
-                        cx.notify();
-                    },
-                ))
+                .child(paper_menu)
                 .child(button(
                     "orient",
                     if landscape {
@@ -600,6 +620,101 @@ impl Render for WriterApp {
                         this.landscape = !this.landscape;
                         this.relayout();
                         cx.notify();
+                    },
+                ))
+                .child(setting_row(
+                    "纸宽 (mm)",
+                    format!("{:.1}", self.page.width),
+                    "pw",
+                    cx,
+                    |a| {
+                        a.page.width = (a.page.width - 5.0).max(40.0);
+                        a.preset = None;
+                        a.relayout();
+                    },
+                    |a| {
+                        a.page.width = (a.page.width + 5.0).min(1000.0);
+                        a.preset = None;
+                        a.relayout();
+                    },
+                ))
+                .child(setting_row(
+                    "纸高 (mm)",
+                    format!("{:.1}", self.page.height),
+                    "ph",
+                    cx,
+                    |a| {
+                        a.page.height = (a.page.height - 5.0).max(40.0);
+                        a.preset = None;
+                        a.relayout();
+                    },
+                    |a| {
+                        a.page.height = (a.page.height + 5.0).min(1000.0);
+                        a.preset = None;
+                        a.relayout();
+                    },
+                ))
+                .child(
+                    div()
+                        .mt_2()
+                        .text_xs()
+                        .text_color(rgb(0x888888))
+                        .child("页边距（四边独立）"),
+                )
+                .child(setting_row(
+                    "上 (mm)",
+                    format!("{:.1}", self.page.margin_top),
+                    "mt",
+                    cx,
+                    |a| {
+                        a.page.margin_top = (a.page.margin_top - 1.0).max(0.0);
+                        a.relayout();
+                    },
+                    |a| {
+                        a.page.margin_top = (a.page.margin_top + 1.0).min(60.0);
+                        a.relayout();
+                    },
+                ))
+                .child(setting_row(
+                    "下 (mm)",
+                    format!("{:.1}", self.page.margin_bottom),
+                    "mb",
+                    cx,
+                    |a| {
+                        a.page.margin_bottom = (a.page.margin_bottom - 1.0).max(0.0);
+                        a.relayout();
+                    },
+                    |a| {
+                        a.page.margin_bottom = (a.page.margin_bottom + 1.0).min(60.0);
+                        a.relayout();
+                    },
+                ))
+                .child(setting_row(
+                    "左 (mm)",
+                    format!("{:.1}", self.page.margin_left),
+                    "ml",
+                    cx,
+                    |a| {
+                        a.page.margin_left = (a.page.margin_left - 1.0).max(0.0);
+                        a.relayout();
+                    },
+                    |a| {
+                        a.page.margin_left = (a.page.margin_left + 1.0).min(60.0);
+                        a.relayout();
+                    },
+                ))
+                .child(setting_row(
+                    "右 (mm)",
+                    format!("{:.1}", self.page.margin_right),
+                    "mr",
+                    cx,
+                    |a| {
+                        a.page.margin_right = (a.page.margin_right - 1.0).max(0.0);
+                        a.relayout();
+                    },
+                    |a| {
+                        a.page.margin_right = (a.page.margin_right + 1.0).min(60.0);
+                        a.relayout();
                     },
                 ))
                 .child(
@@ -620,20 +735,6 @@ impl Render for WriterApp {
                     },
                     |a| {
                         a.size_mm = (a.size_mm + 0.5).min(20.0);
-                        a.relayout();
-                    },
-                ))
-                .child(setting_row(
-                    "页边距 (mm)",
-                    format!("{:.1}", self.margin),
-                    "mg",
-                    cx,
-                    |a| {
-                        a.margin = (a.margin - 1.0).max(0.0);
-                        a.relayout();
-                    },
-                    |a| {
-                        a.margin = (a.margin + 1.0).min(40.0);
                         a.relayout();
                     },
                 ))
@@ -703,7 +804,6 @@ impl Render for WriterApp {
         // ---------------- 中间预览 ----------------
         let page_w = page.width;
         let page_h = page.height;
-        let margin = page.margin;
 
         let preview = div().flex_1().min_w(px(0.)).h_full().p_3().child(
             canvas(
@@ -737,11 +837,15 @@ impl Render for WriterApp {
                             Default::default(),
                         ));
 
-                        let m = margin as f32 * scale;
+                        // 四边独立的页边距参考框
+                        let ml = page.margin_left as f32 * scale;
+                        let mt = page.margin_top as f32 * scale;
+                        let mr = page.margin_right as f32 * scale;
+                        let mb = page.margin_bottom as f32 * scale;
                         window.paint_quad(quad(
                             Bounds {
-                                origin: point(px(ox + m), px(oy + m)),
-                                size: size(px(paper_w - 2.0 * m), px(paper_h - 2.0 * m)),
+                                origin: point(px(ox + ml), px(oy + mt)),
+                                size: size(px(paper_w - ml - mr), px(paper_h - mt - mb)),
                             },
                             px(0.),
                             gpui::transparent_black(),

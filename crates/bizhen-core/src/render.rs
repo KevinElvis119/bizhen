@@ -9,10 +9,11 @@ fn page_body(strokes: &[Stroke], page: PageSpec, margin_line: bool) -> String {
     let mut out = String::new();
     if margin_line {
         out.push_str(&format!(
-            "<rect x=\"{m}\" y=\"{m}\" width=\"{w}\" height=\"{h}\" fill=\"none\" stroke=\"#dddddd\" stroke-width=\"0.2\"/>\n",
-            m = page.margin,
-            w = page.width - 2.0 * page.margin,
-            h = page.height - 2.0 * page.margin
+            "<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" fill=\"none\" stroke=\"#dddddd\" stroke-width=\"0.2\"/>\n",
+            x = page.margin_left,
+            y = page.margin_top,
+            w = page.content_width(),
+            h = page.content_height()
         ));
     }
     out.push_str("<g stroke=\"black\" stroke-width=\"0.35\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\">\n");

@@ -81,31 +81,55 @@ impl Default for MarkdownStyle {
 pub struct PageSpec {
     pub width: f64,
     pub height: f64,
-    pub margin: f64,
+    /// 上边距（mm）
+    pub margin_top: f64,
+    /// 下边距（mm）
+    pub margin_bottom: f64,
+    /// 左边距（mm）
+    pub margin_left: f64,
+    /// 右边距（mm）
+    pub margin_right: f64,
 }
 
 impl PageSpec {
-    pub fn a4() -> Self {
+    /// 四边相同的页边距。
+    pub fn with_margin(width: f64, height: f64, margin: f64) -> Self {
         Self {
-            width: 210.0,
-            height: 297.0,
-            margin: 10.0,
+            width,
+            height,
+            margin_top: margin,
+            margin_bottom: margin,
+            margin_left: margin,
+            margin_right: margin,
         }
     }
 
+    pub fn a4() -> Self {
+        Self::with_margin(210.0, 297.0, 10.0)
+    }
+
+    /// 四边相同时返回该值，否则返回 `None`。
+    pub fn uniform_margin(&self) -> Option<f64> {
+        let m = self.margin_top;
+        (self.margin_bottom == m && self.margin_left == m && self.margin_right == m).then_some(m)
+    }
+
     pub fn content_width(&self) -> f64 {
-        self.width - 2.0 * self.margin
+        self.width - self.margin_left - self.margin_right
     }
 
     pub fn content_height(&self) -> f64 {
-        self.height - 2.0 * self.margin
+        self.height - self.margin_top - self.margin_bottom
     }
 
     pub fn landscape(self) -> Self {
         Self {
             width: self.height,
             height: self.width,
-            margin: self.margin,
+            margin_top: self.margin_top,
+            margin_bottom: self.margin_bottom,
+            margin_left: self.margin_left,
+            margin_right: self.margin_right,
         }
     }
 }
@@ -627,7 +651,7 @@ impl<'a> Renderer<'a> {
             style,
             page,
             pages: vec![Vec::new()],
-            y: page.height - page.margin,
+            y: page.height - page.margin_top,
             max_x: 0.0,
             missing: Vec::new(),
             missing_seen: HashSet::new(),
@@ -643,13 +667,13 @@ impl<'a> Renderer<'a> {
     }
 
     fn left(&self) -> f64 {
-        self.page.margin
+        self.page.margin_left
     }
     fn bottom(&self) -> f64 {
-        self.page.margin
+        self.page.margin_bottom
     }
     fn top(&self) -> f64 {
-        self.page.height - self.page.margin
+        self.page.height - self.page.margin_top
     }
 
     fn lh(&self, size: f64) -> f64 {
@@ -1628,7 +1652,11 @@ mod tests {
         for p in &doc.pages {
             for st in &p.strokes {
                 for pt in &st.points {
-                    assert!(pt.1 >= page.margin - 1e-6, "内容越出下边距：{}", pt.1);
+                    assert!(
+                        pt.1 >= page.margin_bottom - 1e-6,
+                        "内容越出下边距：{}",
+                        pt.1
+                    );
                 }
             }
         }

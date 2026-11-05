@@ -330,3 +330,32 @@ GPUI Kit（`gpui-kit 0.9`，底层 `gpui-pre =0.3.11`）自带 `Textarea`（实�
 * 「字体与抖动」弹窗仍是自绘 `div().absolute()` 浮层：改成 Kit `Dialog` + `NumberInput`
   要重写约 300 行，收益只是外观统一，留作单独一轮。
 * `gpui-pre` 是 Zed 快照 fork（huacnlee 发布），Kit 精确锁定版本；升级要整体跟进。
+---
+
+## 13. 纸张与四边独立页边距（2026-11-05）
+
+`PageSpec` 不再只有一个 `margin`，改成四个方向：
+
+```rust
+pub struct PageSpec {
+    pub width: f64, pub height: f64,
+    pub margin_top: f64, pub margin_bottom: f64,
+    pub margin_left: f64, pub margin_right: f64,
+}
+impl PageSpec {
+    pub fn with_margin(w, h, m) -> Self;   // 四边相同
+    pub fn uniform_margin(&self) -> Option<f64>;
+    pub fn content_width(&self) / content_height(&self);
+}
+```
+
+渲染器里 `left()/bottom()/top()` 分别取左/下/上边距，分页与折行按内容区高宽算。
+界面「页面」标签页：纸张是 Kit 下拉菜单（预设 + 自定义），纸宽/纸高各一行 −/＋，
+页边距四行（上/下/左/右），改动后即时重排。
+
+CLI 也支持：`--margin-top/--margin-bottom/--margin-left/--margin-right`；
+`--margin` 仍然一次性设四边。JSON 输出的 `page` 字段改为四边分别给出。
+
+实测（`--margin-top 35 --margin-bottom 5 --margin-left 45 --margin-right 8`）：
+JSON 的 page 四边正确，墨水范围 x 44.55..141.96（左边距 45，含字形外扩 0.45mm）、
+y 169.59..261.85（上边距 35 → 顶边 262）。

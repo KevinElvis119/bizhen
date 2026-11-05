@@ -42,7 +42,8 @@ fn main() -> ExitCode {
                  bizhen-cli info <font>                字体度量\n  \
                  bizhen-cli ports                      列出串口\n  \
                  bizhen-cli md <file.md> [-o out.gcode|out.svg] [--page A4] [--landscape]\n      \
-                 [--margin 10] [--size 4] [--font kai,futural]",
+                 [--margin 10] [--margin-top 30 --margin-bottom 5 --margin-left 40 --margin-right 10]
+              [--size 4] [--font kai,futural]",
                 bizhen_core::VERSION
             );
             ExitCode::from(2)
@@ -133,11 +134,7 @@ fn page_preset(name: &str) -> Option<PageSpec> {
         "tabloid" => (279.4, 431.8, 12.7),
         _ => return None,
     };
-    Some(PageSpec {
-        width: w,
-        height: h,
-        margin: m,
-    })
+    Some(PageSpec::with_margin(w, h, m))
 }
 
 fn cmd_md(args: &[String]) -> ExitCode {
@@ -166,10 +163,37 @@ fn cmd_md(args: &[String]) -> ExitCode {
                 }
             }
             "--landscape" => landscape = true,
+            "--margin-top" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse::<f64>().ok()) {
+                    page.margin_top = v.max(0.0);
+                }
+            }
+            "--margin-bottom" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse::<f64>().ok()) {
+                    page.margin_bottom = v.max(0.0);
+                }
+            }
+            "--margin-left" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse::<f64>().ok()) {
+                    page.margin_left = v.max(0.0);
+                }
+            }
+            "--margin-right" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse::<f64>().ok()) {
+                    page.margin_right = v.max(0.0);
+                }
+            }
             "--margin" => {
                 i += 1;
                 if let Some(m) = args.get(i).and_then(|s| s.parse::<f64>().ok()) {
-                    page.margin = m;
+                    page.margin_top = m;
+                    page.margin_bottom = m;
+                    page.margin_left = m;
+                    page.margin_right = m;
                 }
             }
             "--size" => {
@@ -307,7 +331,7 @@ fn cmd_md(args: &[String]) -> ExitCode {
                 })
                 .collect();
             let payload = serde_json::json!({
-                "page": { "width": page.width, "height": page.height, "margin": page.margin },
+                "page": { "width": page.width, "height": page.height, "margin_top": page.margin_top, "margin_bottom": page.margin_bottom, "margin_left": page.margin_left, "margin_right": page.margin_right },
                 "pages": pages,
                 "missing": doc.missing.iter().collect::<String>(),
             });
