@@ -19,6 +19,8 @@ pub struct State {
     pub mpos: Option<(f64, f64, f64)>,
     pub feed: f64,
     pub message: String,
+    /// 正在打开串口（可能被驱动卡住几秒，界面据此保持刷新）
+    pub pending: bool,
     /// 正在发作业
     pub busy: bool,
     pub progress: (usize, usize),
@@ -61,6 +63,12 @@ impl Machine {
         self.state.lock().map(|s| s.clone()).unwrap_or_default()
     }
 
+    /// 界面侧直接写一条提示（例如「正在连接…」），不等后台线程回报。
+    pub fn set_message(&self, msg: impl Into<String>) {
+        let msg = msg.into();
+        set(&self.state, |s| s.message = msg);
+    }
+
     pub fn send(&self, cmd: Cmd) {
         let _ = self.tx.send(cmd);
     }
@@ -91,27 +99,55 @@ fn worker(rx: Receiver<Cmd>, state: Arc<Mutex<State>>) {
 
     loop {
         match rx.recv_timeout(Duration::from_millis(400)) {
-            Ok(Cmd::Connect { port, baud }) => match GrblLink::open(&port, baud) {
-                Ok(mut l) => {
-                    let _ = l.unlock();
-                    set(&state, |s| {
-                        s.connected = true;
-                        s.port = port.clone();
-                        s.baud = baud;
-                        s.message = format!("已连接 {port} @ {baud}");
-                        s.grbl_state = "读状态…".into();
+            Ok(Cmd::Connect { port, baud }) => {
+                // 打开串口可能被驱动卡住（死端口/被占用），放到子线程里带超时等待，
+                // 免得主工作线程被拖死、界面一直停在「正在连接」。
+                set(&state, |s| {
+                    s.pending = true;
+                    s.message = format!("正在连接 {port} @ {baud}…");
+                });
+                let (otx, orx) = mpsc::channel();
+                {
+                    let port = port.clone();
+                    std::thread::spawn(move || {
+                        let _ = otx.send(GrblLink::open(&port, baud));
                     });
-                    refresh_status(&mut l, &state);
-                    link = Some(l);
                 }
-                Err(e) => {
-                    set(&state, |s| {
-                        s.connected = false;
-                        s.message = e;
-                    });
-                    link = None;
+                let opened = orx.recv_timeout(Duration::from_secs(8));
+                match opened {
+                    Ok(Ok(mut l)) => {
+                        let _ = l.unlock();
+                        set(&state, |s| {
+                            s.pending = false;
+                            s.connected = true;
+                            s.port = port.clone();
+                            s.baud = baud;
+                            s.message = format!("已连接 {port} @ {baud}");
+                            s.grbl_state = "读状态…".into();
+                        });
+                        refresh_status(&mut l, &state);
+                        link = Some(l);
+                    }
+                    Ok(Err(e)) => {
+                        set(&state, |s| {
+                            s.pending = false;
+                            s.connected = false;
+                            s.message = e;
+                        });
+                        link = None;
+                    }
+                    Err(_) => {
+                        set(&state, |s| {
+                            s.pending = false;
+                            s.connected = false;
+                            s.message = format!(
+                                "打开 {port} 超时（8 秒）：端口可能已被其它程序占用，或设备已拔出"
+                            );
+                        });
+                        link = None;
+                    }
                 }
-            },
+            }
             Ok(Cmd::Disconnect) => {
                 link = None;
                 set(&state, |s| {

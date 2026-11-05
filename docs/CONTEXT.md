@@ -296,3 +296,37 @@ WriterApp
 编辑器为什么不用现成控件：`gpui-component` 0.9.0 的依赖是 `gpui-base ^0.9` +
 `gpui-pre =0.3.11`（GPUI Kit 自己的 gpui 分支），本仓库用的是 crates.io `gpui 0.2.2`，
 两者不是同一套运行时，接入等于整体迁移。因此仍自绘，已补上滚动与光标跟随；IME 仍未接。
+---
+
+## 12. 迁移到 GPUI Kit（2026-11-05，分支 gpui-kit-migration）
+
+### 为什么换
+
+`gpui 0.2.2` 没有可用的多行输入组件，中文输入法要自己实现 `EntityInputHandler`。
+GPUI Kit（`gpui-kit 0.9`，底层 `gpui-pre =0.3.11`）自带 `Textarea`（实现了 IME）、
+下拉菜单、按钮、表格等 75+ 组件，且被 Longbridge Pro 生产使用。
+
+### 三步改动
+
+| 步 | 内容 | 主要文件 |
+|---|---|---|
+| 0 | 运行时切换：`gpui-pre` alias + `gpui_kit::application()`；顺带修「连接后不刷新」与「打开串口无反馈（加 8 秒超时）」 | Cargo.toml / main.rs / machine.rs |
+| 1 | 自绘编辑器（156 行）→ `Entity<TextareaState>` + `Textarea`；`InputEvent::Change` 同步回 `source` 再重排 | main.rs |
+| 1b | 再换成 `EditorState` + `Editor`（代码编辑器模式）：行号 + Markdown 高亮，需开 `gpui-kit` 的 `tree-sitter-markdown` | Cargo.toml / main.rs |
+| 2 | 窗口改用 `gpui_kit::open_window`（挂 Root）；串口/波特率 → `Button + dropdown_menu + PopupMenuItem`，点击用 `WeakEntity::update` 回写 | main.rs |
+| 3 | `button()` 辅助函数改为构造 Kit `Button`（30+ 调用点签名不变），全应用按钮风格统一 | main.rs |
+
+### API 差异备忘（gpui 0.2.2 → gpui-pre 0.3.11）
+
+* `Application::new()` → `gpui_kit::application()`
+* `window.focus(&handle)` → `window.focus(&handle, cx)`
+* `on_window_closed(|cx| …)` → `on_window_closed(|cx, window_id| …)`
+* `ScrollWheelEvent` → `ScrollEvent`；`on_scroll_wheel` → `on_scroll`
+* 组件交互回调只给 `&mut App`，改自家状态要 `cx.entity().downgrade()` + `WeakEntity::update`
+
+### 已知代价与未做项
+
+* debug exe 24.7 MB → 48.6 MB。
+* 「字体与抖动」弹窗仍是自绘 `div().absolute()` 浮层：改成 Kit `Dialog` + `NumberInput`
+  要重写约 300 行，收益只是外观统一，留作单独一轮。
+* `gpui-pre` 是 Zed 快照 fork（huacnlee 发布），Kit 精确锁定版本；升级要整体跟进。
