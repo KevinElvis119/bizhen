@@ -94,7 +94,7 @@ impl AppPanel {
 
 impl BasePanel for AppPanel {
     fn panel_name(&self) -> &'static str {
-        self.part.name()
+        self.part.label()
     }
 
     fn dump(&self, _: &App) -> PanelState {
@@ -862,8 +862,9 @@ impl WriterApp {
 
         // Kit 的代码编辑器模式：行号 + Markdown 语法高亮 + 输入法
         let md_panel: AnyElement = div()
-            .flex_1()
-            .min_h(px(0.))
+            .flex()
+            .flex_col()
+            .size_full()
             .p_2()
             .child(
                 Editor::new(&self.editor)
