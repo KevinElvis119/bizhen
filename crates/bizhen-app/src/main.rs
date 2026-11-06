@@ -15,7 +15,8 @@ mod machine;
 
 use gpui::{
     canvas, div, point, prelude::*, px, quad, rgb, size, AnyElement, App, Bounds, ContentMask,
-    Context, Entity, Focusable, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Context, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent,
     PathBuilder, Render, ScrollEvent, SharedString, Subscription, WeakEntity, Window, WindowBounds,
     WindowOptions,
 };
@@ -24,6 +25,10 @@ use gpui_kit::component::dialog::Dialog;
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::WindowExt;
+use gpui_kit::component::dock::{
+    BasePanel, DockArea, DockLayout, DockPlacement, DockSkin, Panel as KitPanel, PanelEvent,
+    PanelState,
+};
 
 use bizhen_core::font::FontRegistry;
 use bizhen_core::gcode::{self, GCodeConfig};
@@ -35,6 +40,76 @@ use bizhen_core::Stroke;
 
 use machine::Machine;
 
+
+// ---------------- Dock 面板 ----------------
+
+/// 面板内容分区：同一个 WriterApp 的 render 体按分区返回不同片段。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Part {
+    All,
+    Markdown,
+    Page,
+    Preview,
+    Machine,
+}
+
+impl Part {
+    fn name(self) -> &'static str {
+        match self {
+            Part::All => "All",
+            Part::Markdown => "Markdown",
+            Part::Page => "Page",
+            Part::Preview => "Preview",
+            Part::Machine => "Machine",
+        }
+    }
+}
+
+/// 侧栏面板：内容由 WriterApp 渲染（`app.update` 取得），自身不持有状态。
+struct AppPanel {
+    part: Part,
+    app: WeakEntity<WriterApp>,
+    focus: FocusHandle,
+}
+
+impl AppPanel {
+    fn new(part: Part, app: WeakEntity<WriterApp>, cx: &mut Context<Self>) -> Self {
+        Self {
+            part,
+            app,
+            focus: cx.focus_handle(),
+        }
+    }
+}
+
+impl BasePanel for AppPanel {
+    fn panel_name(&self) -> &'static str {
+        self.part.name()
+    }
+
+    fn dump(&self, _: &App) -> PanelState {
+        PanelState::new(self.part.name())
+    }
+}
+
+impl KitPanel for AppPanel {}
+
+impl EventEmitter<PanelEvent> for AppPanel {}
+
+impl Focusable for AppPanel {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl Render for AppPanel {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let part = self.part;
+        self.app
+            .update(cx, |app, cx| app.ui(window, cx, part))
+            .unwrap_or_else(|_| div().into_any_element())
+    }
+}
 /// 纸张预设（mm，纵向：名称、宽、高、页边距）
 const PRESETS: &[(&str, f64, f64, f64)] = &[
     ("A4", 210.0, 297.0, 10.0),
@@ -82,6 +157,8 @@ struct WriterApp {
     pending_open: Option<(String, String)>,
     /// 异步对话框选好的待导入字体
     pending_font: Option<std::path::PathBuf>,
+    /// Dock 区域（首次渲染时构建）
+    dock: Option<Entity<DockArea>>,
     font_page: usize,
 
     symbols: SymbolFonts,
@@ -163,6 +240,7 @@ impl WriterApp {
             auto_dialog: std::env::var("BIZHEN_DEMO_DIALOG").is_ok(),
             pending_open: None,
             pending_font: None,
+            dock: None,
             font_page: 0,
             symbols,
             doc: RenderedDoc::default(),
@@ -647,8 +725,8 @@ fn setting_row(
         ))
 }
 
-impl Render for WriterApp {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl WriterApp {
+    fn ui(&mut self, window: &mut Window, cx: &mut Context<Self>, part: Part) -> AnyElement {
         let __perf = std::env::var("BIZHEN_PERF").is_ok();
         let __t0 = std::time::Instant::now();
         // 异步对话框选好的文件在这里落盘/落编辑器（此处才有 Window）
@@ -763,40 +841,20 @@ impl Render for WriterApp {
             }
         };
 
-        let tabs = div()
-            .flex()
-            .items_center()
-            .bg(rgb(0x2a2a2a))
-            .border_b_1()
-            .border_color(rgb(0x383838))
-            .child(
-                div()
-                    .id("tab_md")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.tab = Tab::Markdown;
-                        cx.notify();
-                    }))
-                    .child(tab_style(tab == Tab::Markdown).child("Markdown")),
-            )
-            .child(
-                div()
-                    .id("tab_page")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.tab = Tab::Page;
-                        cx.notify();
-                    }))
-                    .child(tab_style(tab == Tab::Page).child("页面")),
-            );
 
-        let left_content = if tab == Tab::Markdown {
-            // Kit 的代码编辑器模式：行号 + Markdown 语法高亮 + 输入法
-            div().flex_1().min_h(px(0.)).p_2().child(
+        // Kit 的代码编辑器模式：行号 + Markdown 语法高亮 + 输入法
+        let md_panel: AnyElement = div()
+            .flex_1()
+            .min_h(px(0.))
+            .p_2()
+            .child(
                 Editor::new(&self.editor)
                     .h_full()
                     .w_full()
                     .text_size(px(EDITOR_TEXT_SIZE)),
             )
-        } else {
+            .into_any_element();
+        let page_panel: AnyElement = {
             // 纸张：Kit 下拉菜单（预设 + 自定义）
             let paper_menu = {
                 let weak = cx.entity().downgrade();
@@ -897,17 +955,13 @@ impl Render for WriterApp {
                         a.relayout();
                     },
                 ));
-            div().flex_1().min_h(px(0.)).overflow_hidden().child(panel)
+            div()
+                .flex_1()
+                .min_h(px(0.))
+                .overflow_hidden()
+                .child(panel)
+                .into_any_element()
         };
-
-        let left = div()
-            .w(px(400.))
-            .flex()
-            .flex_col()
-            .border_r_1()
-            .border_color(rgb(0x333333))
-            .child(tabs)
-            .child(left_content);
 
         // ---------------- 中间预览 ----------------
         let page_w = page.width;
@@ -1351,13 +1405,6 @@ impl Render for WriterApp {
                     }),
             );
 
-        let right = div()
-            .w(px(300.))
-            .h_full()
-            .border_l_1()
-            .border_color(rgb(0x333333))
-            .child(machine_panel);
-
         // ---------------- 底部 ----------------
         let footer = div()
             .flex()
@@ -1381,6 +1428,7 @@ impl Render for WriterApp {
                 size_mm_footer, wrap_footer
             )));
 
+        let dock = self.dock_entity(window, cx);
         let mut root = div()
             .relative()
             .flex()
@@ -1388,15 +1436,7 @@ impl Render for WriterApp {
             .size_full()
             .bg(rgb(0x1b1b1b));
         root = root.child(header);
-        root = root.child(
-            div()
-                .flex()
-                .flex_1()
-                .min_h(px(0.))
-                .child(left)
-                .child(preview)
-                .child(right),
-        );
+        root = root.child(div().flex().flex_1().min_h(px(0.)).child(dock));
         root = root.child(footer);
 
         // 冒烟/演示：首帧自动打开弹窗
@@ -1420,7 +1460,56 @@ impl Render for WriterApp {
             cx.on_next_frame(window, |this, window, cx| Self::tick(this, window, cx));
         }
 
-        root
+
+        match part {
+            Part::All => root.into_any_element(),
+            Part::Markdown => md_panel,
+            Part::Page => page_panel,
+            Part::Preview => preview.into_any_element(),
+            Part::Machine => machine_panel.into_any_element(),
+        }
+    }
+
+    /// 首次渲染时构建 Dock：左＝Markdown/页面，中＝预览，右＝机器控制
+    fn dock_entity(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(area) = &self.dock {
+            return area.clone().into_any_element();
+        }
+        let weak = cx.entity().downgrade();
+        let (area, _skin) = DockSkin::dock_area("bizhen-dock", None, window, cx);
+        let md = cx.new(|cx| AppPanel::new(Part::Markdown, weak.clone(), cx));
+        let page = cx.new(|cx| AppPanel::new(Part::Page, weak.clone(), cx));
+        let prev = cx.new(|cx| AppPanel::new(Part::Preview, weak.clone(), cx));
+        let mac = cx.new(|cx| AppPanel::new(Part::Machine, weak.clone(), cx));
+        area.update(cx, |area, cx| {
+            area.set_center(DockLayout::tabs().panel(prev), window, cx);
+            area.set_dock(
+                DockPlacement::Left,
+                DockLayout::tabs().panel(md).panel(page),
+                window,
+                cx,
+            );
+            area.set_dock(
+                DockPlacement::Right,
+                DockLayout::tabs().panel(mac),
+                window,
+                cx,
+            );
+            area.set_dock_size(DockPlacement::Left, px(400.), window, cx);
+            area.set_dock_size(DockPlacement::Right, px(300.), window, cx);
+        });
+        self.dock = Some(area.clone());
+        area.into_any_element()
+    }
+
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ui(window, cx, Part::All)
+    }
+}
+
+impl Render for WriterApp {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ui(window, cx, Part::All)
     }
 }
 
