@@ -15,16 +15,12 @@ mod machine;
 
 use gpui::{
     canvas, div, point, prelude::*, px, quad, rgb, size, AnyElement, App, Bounds, ContentMask,
-    Context, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, MouseDownEvent,
+    Context, Entity, Focusable, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PathBuilder, Render, ScrollEvent, SharedString, Subscription,
     WeakEntity, Window, WindowBounds, WindowOptions,
 };
 use gpui_kit::component::button::Button;
 use gpui_kit::component::dialog::Dialog;
-use gpui_kit::component::dock::{
-    BasePanel, DockArea, DockLayout, DockPlacement, DockSkin, Panel as KitPanel, PanelEvent,
-    PanelState,
-};
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
@@ -95,8 +91,6 @@ struct WriterApp {
     /// 左右侧栏宽度（可拖拽分隔条调整）
     left_w: f32,
     right_w: f32,
-    resize_side: u8,
-    resize_from: (f32, f32),
     font_page: usize,
 
     symbols: SymbolFonts,
@@ -180,8 +174,6 @@ impl WriterApp {
             font_samples: std::collections::HashMap::new(),
             left_w: 460.0,
             right_w: 360.0,
-            resize_side: 0,
-            resize_from: (0.0, 0.0),
             pending_font: None,
             font_page: 0,
             symbols,
@@ -329,45 +321,6 @@ impl WriterApp {
     }
 
     /// 侧栏拖拽分隔条
-    fn resize_handle(&self, side: u8, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .id(SharedString::from(format!("resize_{side}")))
-            .w(px(5.))
-            .h_full()
-            .bg(rgb(0x2a2a2a))
-            .hover(|s| s.bg(rgb(0x4a4a4a)))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
-                    this.resize_side = side;
-                    let x: f32 = ev.position.x.into();
-                    let w = if side == 1 { this.left_w } else { this.right_w };
-                    this.resize_from = (x, w);
-                    cx.notify();
-                }),
-            )
-            .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _w, cx| {
-                if this.resize_side != side {
-                    return;
-                }
-                let x: f32 = ev.position.x.into();
-                let dx = x - this.resize_from.0;
-                if side == 1 {
-                    this.left_w = (this.resize_from.1 + dx).clamp(280.0, 900.0);
-                } else {
-                    this.right_w = (this.resize_from.1 - dx).clamp(240.0, 800.0);
-                }
-                cx.notify();
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _ev: &MouseUpEvent, _w, cx| {
-                    this.resize_side = 0;
-                    cx.notify();
-                }),
-            )
-            .into_any_element()
-    }
 
     fn num_value(&self, id: &str) -> f64 {
         match id {
@@ -887,23 +840,6 @@ impl WriterApp {
             }));
 
         // ---------------- 左侧栏 ----------------
-        let tab_style = |active: bool| {
-            if active {
-                div()
-                    .px_3()
-                    .py_1()
-                    .text_xs()
-                    .text_color(rgb(0xffffff))
-                    .bg(rgb(0x3a3a3a))
-            } else {
-                div()
-                    .px_3()
-                    .py_1()
-                    .text_xs()
-                    .text_color(rgb(0x999999))
-                    .bg(rgb(0x2a2a2a))
-            }
-        };
 
         let tabs = TabBar::new("main-tabs")
             .segmented()
@@ -1566,12 +1502,6 @@ impl WriterApp {
         }
 
         root.into_any_element()
-    }
-
-    /// 首次渲染时构建 Dock：左＝Markdown/页面，中＝预览，右＝机器控制
-
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.ui(window, cx)
     }
 }
 
