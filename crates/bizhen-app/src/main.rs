@@ -1474,9 +1474,9 @@ impl WriterApp {
                 .flex()
                 .flex_1()
                 .min_h(px(0.))
-                .child(div().w(px(400.)).h_full().child(self.dock_left_entity(window, cx)))
+                .child(div().w(px(460.)).h_full().child(self.dock_left_entity(window, cx)))
                 .child(preview)
-                .child(div().w(px(300.)).h_full().child(self.dock_right_entity(window, cx))),
+                .child(div().w(px(360.)).h_full().child(self.dock_right_entity(window, cx))),
         );
         root = root.child(footer);
 
@@ -1534,7 +1534,7 @@ impl WriterApp {
                 window,
                 cx,
             );
-            area.set_dock_size(DockPlacement::Left, px(400.), window, cx);
+            area.set_dock_size(DockPlacement::Left, px(460.), window, cx);
         });
         self.dock_left = Some(area.clone());
         area.into_any_element()
@@ -1555,7 +1555,7 @@ impl WriterApp {
                 window,
                 cx,
             );
-            area.set_dock_size(DockPlacement::Right, px(300.), window, cx);
+            area.set_dock_size(DockPlacement::Right, px(360.), window, cx);
         });
         self.dock_right = Some(area.clone());
         area.into_any_element()
