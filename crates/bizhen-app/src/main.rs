@@ -54,6 +54,16 @@ enum Part {
 }
 
 impl Part {
+    fn label(self) -> &'static str {
+        match self {
+            Part::All => "笔阵",
+            Part::Markdown => "编辑",
+            Part::Page => "页面",
+            Part::Preview => "预览",
+            Part::Machine => "机器控制",
+        }
+    }
+
     fn name(self) -> &'static str {
         match self {
             Part::All => "All",
@@ -92,7 +102,15 @@ impl BasePanel for AppPanel {
     }
 }
 
-impl KitPanel for AppPanel {}
+impl KitPanel for AppPanel {
+    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
+        Some(SharedString::from(self.part.label()))
+    }
+
+    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().text_sm().child(self.part.label())
+    }
+}
 
 impl EventEmitter<PanelEvent> for AppPanel {}
 
