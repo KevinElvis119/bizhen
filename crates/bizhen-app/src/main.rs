@@ -88,6 +88,8 @@ struct WriterApp {
     pending_font: Option<std::path::PathBuf>,
     /// 字体样张（归一化 0..1 折线），按字体名缓存
     font_samples: std::collections::HashMap<String, Vec<Vec<(f32, f32)>>>,
+    /// 右侧机器面板是否显示（折叠 = 隐藏）
+    right_visible: bool,
     /// 左右侧栏宽度（可拖拽分隔条调整）
     left_w: f32,
     right_w: f32,
@@ -172,6 +174,7 @@ impl WriterApp {
             auto_dialog: std::env::var("BIZHEN_DEMO_DIALOG").is_ok(),
             pending_open: None,
             font_samples: std::collections::HashMap::new(),
+            right_visible: true,
             left_w: 460.0,
             right_w: 360.0,
             pending_font: None,
@@ -776,6 +779,8 @@ impl WriterApp {
         let tab = self.tab;
         let invert_x = self.invert_x;
         let invert_y = self.invert_y;
+        let win_w = f32::from(window.viewport_size().width).max(800.0);
+        let right_visible = self.right_visible;
         let left_w = self.left_w;
         let right_w = self.right_w;
         let start_x = self.start_x;
@@ -1424,6 +1429,14 @@ impl WriterApp {
                     .child(status),
             )
             .child(div().text_xs().text_color(rgb(0x777777)).child(format!(
+                "缩放 {:.0}%",
+                self.zoom * 100.0
+            )))
+            .child(div().text_xs().text_color(rgb(0x777777)).child(format!(
+                "窗口 {:.0}",
+                win_w
+            )))
+            .child(div().text_xs().text_color(rgb(0x777777)).child(format!(
                 "{:.1} mm · 折行 {:.0}",
                 size_mm_footer, wrap_footer
             )));
@@ -1459,24 +1472,30 @@ impl WriterApp {
             .child(machine_panel);
 
         // 侧栏上限按窗口宽度算：左 50%、右 20%
-        let win_w = f32::from(window.viewport_size().width).max(800.0);
+        let mut layout = h_resizable("bizhen-layout")
+            .child(
+                resizable_panel()
+                    .size(px(460.))
+                    .size_range(px(280.)..px((win_w * 0.5).max(360.)))
+                    .child(left),
+            )
+            .child(resizable_panel().child(preview));
+        if self.right_visible {
+            layout = layout.child(
+                resizable_panel()
+                    .size(px(320.))
+                    .size_range(px(320.)..px(320.))
+                    .child(right),
+            );
+        }
+
         root = root.child(
-            div().w_full().h_full().flex_1().min_h(px(0.)).child(
-                h_resizable("bizhen-layout")
-                    .child(
-                        resizable_panel()
-                            .size(px(460.))
-                            .size_range(px(280.)..px((win_w * 0.5).max(280.)))
-                            .child(left),
-                    )
-                    .child(resizable_panel().child(preview))
-                    .child(
-                        resizable_panel()
-                            .size(px(360.))
-                            .size_range(px(200.)..px((win_w * 0.2).max(200.)))
-                            .child(right),
-                    ),
-            ),
+            div()
+                .w_full()
+                .h_full()
+                .flex_1()
+                .min_h(px(0.))
+                .child(layout),
         );
         root = root.child(footer);
 
