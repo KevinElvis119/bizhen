@@ -1536,20 +1536,22 @@ impl WriterApp {
             .overflow_y_scroll()
             .child(machine_panel);
 
+        // 侧栏上限按窗口宽度算：左 50%、右 20%
+        let win_w = f32::from(window.bounds().size.width);
         root = root.child(
             div().w_full().h_full().flex_1().min_h(px(0.)).child(
                 h_resizable("bizhen-layout")
                     .child(
                         resizable_panel()
                             .size(px(460.))
-                            .size_range(px(280.)..px(900.))
+                            .size_range(px(280.)..px((win_w * 0.5).max(280.)))
                             .child(left),
                     )
                     .child(resizable_panel().child(preview))
                     .child(
                         resizable_panel()
                             .size(px(360.))
-                            .size_range(px(240.)..px(800.))
+                            .size_range(px(200.)..px((win_w * 0.2).max(200.)))
                             .child(right),
                     ),
             ),
