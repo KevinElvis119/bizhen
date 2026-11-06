@@ -180,6 +180,11 @@ struct WriterApp {
     panels: Vec<Entity<AppPanel>>,
     /// 字体样张（归一化 0..1 折线），按字体名缓存
     font_samples: std::collections::HashMap<String, Vec<Vec<(f32, f32)>>>,
+    /// 左右侧栏宽度（可拖拽分隔条调整）
+    left_w: f32,
+    right_w: f32,
+    resize_side: u8,
+    resize_from: (f32, f32),
     dock_left: Option<Entity<DockArea>>,
     dock_right: Option<Entity<DockArea>>,
     font_page: usize,
@@ -264,6 +269,10 @@ impl WriterApp {
             pending_open: None,
             panels: Vec::new(),
             font_samples: std::collections::HashMap::new(),
+            left_w: 460.0,
+            right_w: 360.0,
+            resize_side: 0,
+            resize_from: (0.0, 0.0),
             pending_font: None,
             dock_left: None,
             dock_right: None,
@@ -412,6 +421,47 @@ impl WriterApp {
             })
             .collect();
         self.font_samples.insert(name.to_string(), out);
+    }
+
+    /// 侧栏拖拽分隔条
+    fn resize_handle(&self, side: u8, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id(SharedString::from(format!("resize_{side}")))
+            .w(px(5.))
+            .h_full()
+            .bg(rgb(0x2a2a2a))
+            .hover(|s| s.bg(rgb(0x4a4a4a)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
+                    this.resize_side = side;
+                    let x: f32 = ev.position.x.into();
+                    let w = if side == 1 { this.left_w } else { this.right_w };
+                    this.resize_from = (x, w);
+                    cx.notify();
+                }),
+            )
+            .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _w, cx| {
+                if this.resize_side != side {
+                    return;
+                }
+                let x: f32 = ev.position.x.into();
+                let dx = x - this.resize_from.0;
+                if side == 1 {
+                    this.left_w = (this.resize_from.1 + dx).clamp(280.0, 900.0);
+                } else {
+                    this.right_w = (this.resize_from.1 - dx).clamp(240.0, 800.0);
+                }
+                cx.notify();
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _ev: &MouseUpEvent, _w, cx| {
+                    this.resize_side = 0;
+                    cx.notify();
+                }),
+            )
+            .into_any_element()
     }
 
     fn num_value(&self, id: &str) -> f64 {
@@ -862,6 +912,8 @@ impl WriterApp {
         let tab = self.tab;
         let invert_x = self.invert_x;
         let invert_y = self.invert_y;
+        let left_w = self.left_w;
+        let right_w = self.right_w;
         let start_x = self.start_x;
         let start_y = self.start_y;
         let pan_x = self.pan_x;
@@ -941,6 +993,31 @@ impl WriterApp {
                     .bg(rgb(0x2a2a2a))
             }
         };
+
+        let tabs = div()
+            .flex()
+            .items_center()
+            .bg(rgb(0x2a2a2a))
+            .border_b_1()
+            .border_color(rgb(0x383838))
+            .child(
+                div()
+                    .id(SharedString::from("tab_md"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.tab = Tab::Markdown;
+                        cx.notify();
+                    }))
+                    .child(tab_style(tab == Tab::Markdown).child("编辑")),
+            )
+            .child(
+                div()
+                    .id(SharedString::from("tab_page"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.tab = Tab::Page;
+                        cx.notify();
+                    }))
+                    .child(tab_style(tab == Tab::Page).child("页面")),
+            );
 
 
         // Kit 的代码编辑器模式：行号 + Markdown 语法高亮 + 输入法
@@ -1538,14 +1615,39 @@ impl WriterApp {
             .size_full()
             .bg(rgb(0x1b1b1b));
         root = root.child(header);
+        let left = div()
+            .w(px(left_w))
+            .h_full()
+            .flex()
+            .flex_col()
+            .border_r_1()
+            .border_color(rgb(0x333333))
+            .child(tabs)
+            .child(if tab == Tab::Markdown {
+                md_panel
+            } else {
+                page_panel
+            });
+
+        let right = div()
+            .w(px(right_w))
+            .h_full()
+            .border_l_1()
+            .border_color(rgb(0x333333))
+            .id(SharedString::from("machine_scroll"))
+            .overflow_y_scroll()
+            .child(machine_panel);
+
         root = root.child(
             div()
                 .flex()
                 .flex_1()
                 .min_h(px(0.))
-                .child(div().w(px(460.)).h_full().child(self.dock_left_entity(window, cx)))
+                .child(left)
+                .child(self.resize_handle(1, cx))
                 .child(preview)
-                .child(div().w(px(360.)).h_full().child(self.dock_right_entity(window, cx))),
+                .child(self.resize_handle(2, cx))
+                .child(right),
         );
         root = root.child(footer);
 
@@ -1571,18 +1673,7 @@ impl WriterApp {
         }
 
 
-        match part {
-            Part::All => root.into_any_element(),
-            Part::Markdown => md_panel,
-            Part::Page => page_panel,
-            Part::Preview => div().into_any_element(),
-            Part::Machine => div()
-                .id(SharedString::from("machine_scroll"))
-                .size_full()
-                .overflow_y_scroll()
-                .child(machine_panel)
-                .into_any_element(),
-        }
+        root.into_any_element()
     }
 
     /// 首次渲染时构建 Dock：左＝Markdown/页面，中＝预览，右＝机器控制
