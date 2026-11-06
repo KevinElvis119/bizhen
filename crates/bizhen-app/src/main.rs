@@ -1523,7 +1523,7 @@ impl WriterApp {
             .child(machine_panel);
 
         // 侧栏上限按窗口宽度算：左 50%、右 20%
-        let win_w = f32::from(window.bounds().size.width);
+        let win_w = f32::from(window.viewport_size().width).max(800.0);
         root = root.child(
             div().w_full().h_full().flex_1().min_h(px(0.)).child(
                 h_resizable("bizhen-layout")
