@@ -435,3 +435,18 @@ pub fn send_program_controlled(&mut self, lines, progress, ctl, pen_up, pen_down
 正常      G0 X11.292 Y13.952
 反转 X+Y   G0 X-11.292 Y-13.952
 ```
+---
+
+## 16. 取消 .gfont 直接支持（2026-11-07）
+
+用 gfont 作首选字体时，部分页面会整页空白（字形轮廓解析出问题）。与其在字体引擎里
+兜一个可能崩的格式，不如把它挡在门外：
+
+* `registry::scan_user()` 不再登记 `.gfont`，导入对话框的过滤器也只留 `.json` / `.jhf`
+* `.gfont` 交给外置转换：`bizhen-cli gfont2json <in.gfont> [-o out.json]`
+  —— 解析用核心里的 `gfont::parse_gfont`，输出成 `stroke-json`（`{"U+XXXX": [[[x,y],...]]}`，
+  0..1 归一化、Y 向下，坐标保留 4 位小数）
+* 好处：应用只吃一种单线格式；`.gfont` 的加密/版权包袱留在转换那一步
+
+实测：`陈继世6_kvenjoy_1.gfont` → 6909 字形 / 6.2 MB JSON，`bizhen-cli info chen6` 度量正常
+（ascent 1.0 / descent -0.2）。

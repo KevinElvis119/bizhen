@@ -33,13 +33,15 @@ fn main() -> ExitCode {
         Some("info") => cmd_info(&args),
         #[cfg(feature = "serial")]
         Some("ports") => cmd_ports(),
+        Some("gfont2json") => cmd_gfont2json(&args[1..]),
         Some("md") => cmd_md(&args[1..]),
         _ => {
             eprintln!(
                 "Bizhen v{}\n\n\
                  用法：\n  \
                  bizhen-cli fonts                      列出内置字体\n  \
-                 bizhen-cli info <font>                字体度量\n  \
+                 bizhen-cli gfont2json <in.gfont> [-o out.json]   .gfont 转 stroke-json\n  \
+                 bizhen-cli gfont2json <in.gfont> [-o out.json]   把 .gfont 转成 stroke-json
                  bizhen-cli ports                      列出串口\n  \
                  bizhen-cli md <file.md> [-o out.gcode|out.svg] [--page A4] [--landscape]\n      \
                  [--margin 10] [--margin-top 30 --margin-bottom 5 --margin-left 40 --margin-right 10]
@@ -47,6 +49,70 @@ fn main() -> ExitCode {
                 bizhen_core::VERSION
             );
             ExitCode::from(2)
+        }
+    }
+}
+
+/// 把 `.gfont` 转成 `stroke-json`：应用侧不再直接加载 gfont（规避格式与版权问题）。
+fn cmd_gfont2json(args: &[String]) -> ExitCode {
+    let Some(input) = args.first() else {
+        eprintln!("用法：bizhen-cli gfont2json <in.gfont> [-o out.json]");
+        return ExitCode::from(2);
+    };
+    let out = args
+        .windows(2)
+        .find(|w| w[0] == "-o" || w[0] == "--out")
+        .map(|w| w[1].clone())
+        .unwrap_or_else(|| {
+            let stem = std::path::Path::new(input)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "font".into());
+            format!("{stem}.json")
+        });
+
+    match bizhen_core::font::gfont::parse_gfont(std::path::Path::new(input), None) {
+        Ok(fam) => {
+            let mut map = std::collections::BTreeMap::new();
+            let upem = if fam.units_per_em > 0.0 {
+                fam.units_per_em
+            } else {
+                1.0
+            };
+            for (ch, g) in &fam.glyphs {
+                let strokes: Vec<Vec<[f64; 2]>> = g
+                    .strokes
+                    .iter()
+                    .filter(|s| s.len() >= 2)
+                    .map(|s| {
+                        s.iter()
+                            .map(|p| {
+                                let x = ((p.0 / upem).clamp(0.0, 1.0) * 10000.0).round() / 10000.0;
+                                let y = ((1.0 - p.1 / upem).clamp(0.0, 1.0) * 10000.0).round() / 10000.0;
+                                [x, y]
+                            })
+                            .collect()
+                    })
+                    .collect();
+                if !strokes.is_empty() {
+                    map.insert(format!("U+{:04X}", *ch as u32), strokes);
+                }
+            }
+            let json = serde_json::to_string(&map).unwrap_or_default();
+            match std::fs::write(&out, json) {
+                Ok(()) => {
+                    println!("已转换 {} 个字形 → {out}", map.len());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("写出失败：{e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("解析 .gfont 失败：{e}");
+            ExitCode::from(1)
         }
     }
 }

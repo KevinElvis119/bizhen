@@ -507,7 +507,7 @@ impl WriterApp {
     fn import_font(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             let picked = rfd::AsyncFileDialog::new()
-                .add_filter("单线字体", &["gfont", "jhf", "json"])
+                .add_filter("单线字体", &["json", "jhf"])
                 .pick_file()
                 .await;
             let Some(handle) = picked else { return };

@@ -118,10 +118,6 @@ impl FontRegistry {
             match ext.as_str() {
                 "jhf" => self.register(&stem, "hershey", path, stem.clone()),
                 "json" => self.register(&stem, "stroke-json", path, stem.clone()),
-                "gfont" => {
-                    let display = gfont::display_name(&path);
-                    self.register(&stem, "gfont", path, display);
-                }
                 _ => {}
             }
         }
