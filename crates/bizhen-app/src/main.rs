@@ -178,6 +178,8 @@ struct WriterApp {
     /// Dock 区域（首次渲染时构建）
     /// 所有 dock 面板：状态变化时逐个通知，预览才会即时重绘
     panels: Vec<Entity<AppPanel>>,
+    /// 字体样张（归一化 0..1 折线），按字体名缓存
+    font_samples: std::collections::HashMap<String, Vec<Vec<(f32, f32)>>>,
     dock_left: Option<Entity<DockArea>>,
     dock_right: Option<Entity<DockArea>>,
     font_page: usize,
@@ -261,6 +263,7 @@ impl WriterApp {
             auto_dialog: std::env::var("BIZHEN_DEMO_DIALOG").is_ok(),
             pending_open: None,
             panels: Vec::new(),
+            font_samples: std::collections::HashMap::new(),
             pending_font: None,
             dock_left: None,
             dock_right: None,
@@ -348,6 +351,67 @@ impl WriterApp {
         for panel in &self.panels {
             panel.update(cx, |_, cx| cx.notify());
         }
+    }
+
+    /// 生成（并缓存）某款字体的样张折线：归一化到 0..1，y 已翻转为屏幕方向。
+    fn ensure_sample(&mut self, name: &str) {
+        if self.font_samples.contains_key(name) {
+            return;
+        }
+        let Some(f) = self.registry.get(name) else {
+            return;
+        };
+        let chars: Vec<char> = if f.has('永') {
+            vec!['永']
+        } else if f.has('A') {
+            vec!['A', 'a']
+        } else {
+            vec!['o']
+        };
+        let mut raw: Vec<Vec<(f64, f64)>> = Vec::new();
+        let mut x = 0.0;
+        for ch in chars {
+            let Some(g) = f.glyph(ch) else { continue };
+            for s in &g.strokes {
+                if s.len() < 2 {
+                    continue;
+                }
+                raw.push(s.iter().map(|p| (x + p.0, p.1)).collect());
+            }
+            x += if g.advance > 0.0 { g.advance } else { f.default_advance };
+        }
+        if raw.is_empty() {
+            return;
+        }
+        let mut min_x = f64::MAX;
+        let mut max_x = f64::MIN;
+        let mut min_y = f64::MAX;
+        let mut max_y = f64::MIN;
+        for s in &raw {
+            for (x, y) in s {
+                min_x = min_x.min(*x);
+                max_x = max_x.max(*x);
+                min_y = min_y.min(*y);
+                max_y = max_y.max(*y);
+            }
+        }
+        let w = (max_x - min_x).max(1e-6);
+        let h = (max_y - min_y).max(1e-6);
+        let scale = (1.0 / w).min(1.0 / h);
+        let out: Vec<Vec<(f32, f32)>> = raw
+            .iter()
+            .map(|s| {
+                s.iter()
+                    .map(|(x, y)| {
+                        (
+                            ((x - min_x) * scale * w.min(h) / w) as f32,
+                            ((max_y - y) * scale * w.min(h) / h) as f32,
+                        )
+                    })
+                    .collect()
+            })
+            .collect();
+        self.font_samples.insert(name.to_string(), out);
     }
 
     fn num_value(&self, id: &str) -> f64 {
@@ -545,8 +609,8 @@ impl WriterApp {
         .detach();
     }
 
-    /// 把选好的字体拷进用户字库并刷新。
     fn do_import_font(&mut self, path: std::path::PathBuf) -> String {
+        let before = self.registry.entries().len();
         let dir = bizhen_core::font::registry::user_font_dir();
         if let Err(e) = std::fs::create_dir_all(&dir) {
             return format!("创建字库目录失败：{e}");
@@ -560,7 +624,12 @@ impl WriterApp {
         }
         self.registry.refresh();
         self.relayout();
-        format!("已导入 {}", file_name.to_string_lossy())
+        let after = self.registry.entries().len();
+        if after > before {
+            format!("已导入 {}（字体 {before} → {after}）", file_name.to_string_lossy())
+        } else {
+            format!("已复制 {}，但字库未识别（支持 .gfont/.jhf/.json）", file_name.to_string_lossy())
+        }
     }
 
     // -- 操作 ---------------------------------------------------------------
@@ -1645,6 +1714,38 @@ fn w_param(
 }
 
 /// 「字体与手写抖动」的弹窗内容。
+/// 字体样张：把归一化折线画进一个小画布。
+fn font_sample_canvas(index: usize, samples: &[Vec<Vec<(f32, f32)>>]) -> AnyElement {
+    let polys = samples.get(index).cloned().unwrap_or_default();
+    let (pw, ph) = (46.0f32, 14.0f32);
+    div()
+        .w(px(pw))
+        .h(px(ph))
+        .child(canvas(
+            move |_, _, _| {},
+            move |bounds, _, window, _cx| {
+                let ox = f32::from(bounds.origin.x);
+                let oy = f32::from(bounds.origin.y);
+                let mut b = PathBuilder::stroke(px(1.0));
+                for poly in &polys {
+                    for (i, (x, y)) in poly.iter().enumerate() {
+                        let sx = ox + x * pw * 0.9 + 2.0;
+                        let sy = oy + y * ph * 0.9 + 1.0;
+                        if i == 0 {
+                            b.move_to(point(px(sx), px(sy)));
+                        } else {
+                            b.line_to(point(px(sx), px(sy)));
+                        }
+                    }
+                }
+                if let Ok(path) = b.build() {
+                    window.paint_path(path, rgb(0xc8c8c8));
+                }
+            },
+        ))
+        .into_any_element()
+}
+
 fn build_style_dialog(dialog: Dialog, weak: &WeakEntity<WriterApp>, cx: &mut App) -> Dialog {
     const PER_PAGE: usize = 9;
 
@@ -1731,8 +1832,22 @@ fn build_style_dialog(dialog: Dialog, weak: &WeakEntity<WriterApp>, cx: &mut App
     }
 
     // ---- 可选字体（分页）----
+    // 预取本页字体的样张（首帧解析一次，之后走缓存）
+    let _ = weak.update(cx, |app, _| {
+        for (n, _, _) in &entries[start..end] {
+            app.ensure_sample(n);
+        }
+    });
+    let samples: Vec<Vec<Vec<(f32, f32)>>> = weak
+        .read_with(cx, |app, _| {
+            entries[start..end]
+                .iter()
+                .map(|(n, _, _)| app.font_samples.get(n).cloned().unwrap_or_default())
+                .collect()
+        })
+        .unwrap_or_default();
     let mut font_grid = div().flex().flex_wrap().gap_1();
-    for (name, display, kind) in &entries[start..end] {
+    for (index, (name, display, kind)) in entries[start..end].iter().enumerate() {
         let chosen = chain.iter().any(|c| c == name);
         let label = if chosen {
             format!("✓ {display}")
@@ -1747,6 +1862,7 @@ fn build_style_dialog(dialog: Dialog, weak: &WeakEntity<WriterApp>, cx: &mut App
         };
         font_grid = font_grid.child(
             div()
+                    .child(font_sample_canvas(index, &samples))
                 .flex()
                 .items_center()
                 .gap_1()
@@ -1981,4 +2097,5 @@ fn main() {
         cx.on_window_closed(|cx, _| cx.quit()).detach();
         cx.activate(true);
     });
+
 }
