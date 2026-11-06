@@ -28,6 +28,7 @@ use gpui_kit::component::dock::{
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
+use gpui_kit::component::tab::{Tab as KitTab, TabBar};
 use gpui_kit::component::WindowExt;
 
 use bizhen_core::font::FontRegistry;
@@ -904,30 +905,15 @@ impl WriterApp {
             }
         };
 
-        let tabs = div()
-            .flex()
-            .items_center()
-            .bg(rgb(0x2a2a2a))
-            .border_b_1()
-            .border_color(rgb(0x383838))
-            .child(
-                div()
-                    .id(SharedString::from("tab_md"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.tab = Tab::Markdown;
-                        cx.notify();
-                    }))
-                    .child(tab_style(tab == Tab::Markdown).child("编辑")),
-            )
-            .child(
-                div()
-                    .id(SharedString::from("tab_page"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.tab = Tab::Page;
-                        cx.notify();
-                    }))
-                    .child(tab_style(tab == Tab::Page).child("页面")),
-            );
+        let tabs = TabBar::new("main-tabs")
+            .segmented()
+            .selected_index(if tab == Tab::Markdown { 0 } else { 1 })
+            .on_click(cx.listener(|this, ix: &usize, _w, cx| {
+                this.tab = if *ix == 0 { Tab::Markdown } else { Tab::Page };
+                cx.notify();
+            }))
+            .child(KitTab::new().label("编辑"))
+            .child(KitTab::new().label("页面"));
 
         // Kit 的代码编辑器模式：行号 + Markdown 语法高亮 + 输入法
         let md_panel: AnyElement = div()
