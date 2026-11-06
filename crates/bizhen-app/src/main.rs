@@ -828,6 +828,15 @@ impl WriterApp {
                     open_style_dialog(window, cx);
                 },
             ))
+            .child(button(
+                "toggle_machine",
+                if right_visible { "隐藏机器" } else { "显示机器" },
+                cx,
+                |this, _w, cx| {
+                    this.right_visible = !this.right_visible;
+                    cx.notify();
+                },
+            ))
             .child(button("prev_page", "◀", cx, |this, _w, cx| {
                 this.page_index = this.page_index.saturating_sub(1);
                 cx.notify();
@@ -1472,7 +1481,9 @@ impl WriterApp {
             .child(machine_panel);
 
         // 侧栏上限按窗口宽度算：左 50%、右 20%
-        let mut layout = h_resizable("bizhen-layout")
+        // 只在「左栏 | 预览」之间保留一条可拖分隔线；右栏固定宽度、不进分组，
+        // 避免两条分隔线互相干扰
+        let layout = h_resizable("bizhen-layout")
             .child(
                 resizable_panel()
                     .size(px(460.))
@@ -1480,22 +1491,18 @@ impl WriterApp {
                     .child(left),
             )
             .child(resizable_panel().child(preview));
-        if self.right_visible {
-            layout = layout.child(
-                resizable_panel()
-                    .size(px(320.))
-                    .size_range(px(320.)..px(320.))
-                    .child(right),
-            );
-        }
 
         root = root.child(
             div()
+                .flex()
                 .w_full()
                 .h_full()
                 .flex_1()
                 .min_h(px(0.))
-                .child(layout),
+                .child(div().flex_1().h_full().min_w(px(0.)).child(layout))
+                .when(self.right_visible, |this| {
+                    this.child(div().w(px(320.)).h_full().child(right))
+                }),
         );
         root = root.child(footer);
 
