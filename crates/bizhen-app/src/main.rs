@@ -15,14 +15,20 @@ mod machine;
 
 use gpui::{
     canvas, div, point, prelude::*, px, quad, rgb, size, AnyElement, App, Bounds, ContentMask,
-    Context, Entity, Focusable, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PathBuilder, Render, ScrollEvent, SharedString, Subscription, WeakEntity, Window, WindowBounds,
-    WindowOptions,
+    Context, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PathBuilder, Render, ScrollEvent, SharedString, Subscription,
+    WeakEntity, Window, WindowBounds, WindowOptions,
 };
 use gpui_kit::component::button::Button;
 use gpui_kit::component::dialog::Dialog;
+use gpui_kit::component::dock::{
+    BasePanel, DockArea, DockLayout, DockPlacement, DockSkin, Panel as KitPanel, PanelEvent,
+    PanelState,
+};
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::resizable::{h_resizable, resizable_panel};
+use gpui_kit::component::tab::{Tab as KitTab, TabBar};
 use gpui_kit::component::WindowExt;
 
 use bizhen_core::font::FontRegistry;
@@ -34,6 +40,8 @@ use bizhen_core::symbols::SymbolFonts;
 use bizhen_core::Stroke;
 
 use machine::Machine;
+
+// ---------------- Dock 面板 ----------------
 
 /// 纸张预设（mm，纵向：名称、宽、高、页边距）
 const PRESETS: &[(&str, f64, f64, f64)] = &[
@@ -82,6 +90,13 @@ struct WriterApp {
     pending_open: Option<(String, String)>,
     /// 异步对话框选好的待导入字体
     pending_font: Option<std::path::PathBuf>,
+    /// 字体样张（归一化 0..1 折线），按字体名缓存
+    font_samples: std::collections::HashMap<String, Vec<Vec<(f32, f32)>>>,
+    /// 左右侧栏宽度（可拖拽分隔条调整）
+    left_w: f32,
+    right_w: f32,
+    resize_side: u8,
+    resize_from: (f32, f32),
     font_page: usize,
 
     symbols: SymbolFonts,
@@ -162,6 +177,11 @@ impl WriterApp {
             // 演示/冒烟：BIZHEN_DEMO_DIALOG=1 启动即打开弹窗
             auto_dialog: std::env::var("BIZHEN_DEMO_DIALOG").is_ok(),
             pending_open: None,
+            font_samples: std::collections::HashMap::new(),
+            left_w: 460.0,
+            right_w: 360.0,
+            resize_side: 0,
+            resize_from: (0.0, 0.0),
             pending_font: None,
             font_page: 0,
             symbols,
@@ -239,6 +259,115 @@ impl WriterApp {
     }
 
     // ---------------- 数值输入行 ----------------
+
+    /// 状态变化后通知主视图与所有面板：预览的 canvas 属于面板，
+    /// 只 notify 主视图时它不会重绘（表现为缩放/拖动要等下一次事件才刷新）。
+
+    /// 生成（并缓存）某款字体的样张折线：归一化到 0..1，y 已翻转为屏幕方向。
+    fn ensure_sample(&mut self, name: &str) {
+        if self.font_samples.contains_key(name) {
+            return;
+        }
+        let Some(f) = self.registry.get(name) else {
+            return;
+        };
+        let chars: Vec<char> = if f.has('永') {
+            vec!['永']
+        } else if f.has('A') {
+            vec!['A', 'a']
+        } else {
+            vec!['o']
+        };
+        let mut raw: Vec<Vec<(f64, f64)>> = Vec::new();
+        let mut x = 0.0;
+        for ch in chars {
+            let Some(g) = f.glyph(ch) else { continue };
+            for s in &g.strokes {
+                if s.len() < 2 {
+                    continue;
+                }
+                raw.push(s.iter().map(|p| (x + p.0, p.1)).collect());
+            }
+            x += if g.advance > 0.0 {
+                g.advance
+            } else {
+                f.default_advance
+            };
+        }
+        if raw.is_empty() {
+            return;
+        }
+        let mut min_x = f64::MAX;
+        let mut max_x = f64::MIN;
+        let mut min_y = f64::MAX;
+        let mut max_y = f64::MIN;
+        for s in &raw {
+            for (x, y) in s {
+                min_x = min_x.min(*x);
+                max_x = max_x.max(*x);
+                min_y = min_y.min(*y);
+                max_y = max_y.max(*y);
+            }
+        }
+        let w = (max_x - min_x).max(1e-6);
+        let h = (max_y - min_y).max(1e-6);
+        let scale = (1.0 / w).min(1.0 / h);
+        let out: Vec<Vec<(f32, f32)>> = raw
+            .iter()
+            .map(|s| {
+                s.iter()
+                    .map(|(x, y)| {
+                        (
+                            ((x - min_x) * scale * w.min(h) / w) as f32,
+                            ((max_y - y) * scale * w.min(h) / h) as f32,
+                        )
+                    })
+                    .collect()
+            })
+            .collect();
+        self.font_samples.insert(name.to_string(), out);
+    }
+
+    /// 侧栏拖拽分隔条
+    fn resize_handle(&self, side: u8, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id(SharedString::from(format!("resize_{side}")))
+            .w(px(5.))
+            .h_full()
+            .bg(rgb(0x2a2a2a))
+            .hover(|s| s.bg(rgb(0x4a4a4a)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
+                    this.resize_side = side;
+                    let x: f32 = ev.position.x.into();
+                    let w = if side == 1 { this.left_w } else { this.right_w };
+                    this.resize_from = (x, w);
+                    cx.notify();
+                }),
+            )
+            .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _w, cx| {
+                if this.resize_side != side {
+                    return;
+                }
+                let x: f32 = ev.position.x.into();
+                let dx = x - this.resize_from.0;
+                if side == 1 {
+                    this.left_w = (this.resize_from.1 + dx).clamp(280.0, 900.0);
+                } else {
+                    this.right_w = (this.resize_from.1 - dx).clamp(240.0, 800.0);
+                }
+                cx.notify();
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _ev: &MouseUpEvent, _w, cx| {
+                    this.resize_side = 0;
+                    cx.notify();
+                }),
+            )
+            .into_any_element()
+    }
 
     fn num_value(&self, id: &str) -> f64 {
         match id {
@@ -435,8 +564,8 @@ impl WriterApp {
         .detach();
     }
 
-    /// 把选好的字体拷进用户字库并刷新。
     fn do_import_font(&mut self, path: std::path::PathBuf) -> String {
+        let before = self.registry.entries().len();
         let dir = bizhen_core::font::registry::user_font_dir();
         if let Err(e) = std::fs::create_dir_all(&dir) {
             return format!("创建字库目录失败：{e}");
@@ -450,7 +579,18 @@ impl WriterApp {
         }
         self.registry.refresh();
         self.relayout();
-        format!("已导入 {}", file_name.to_string_lossy())
+        let after = self.registry.entries().len();
+        if after > before {
+            format!(
+                "已导入 {}（字体 {before} → {after}）",
+                file_name.to_string_lossy()
+            )
+        } else {
+            format!(
+                "已复制 {}，但字库未识别（支持 .gfont/.jhf/.json）",
+                file_name.to_string_lossy()
+            )
+        }
     }
 
     // -- 操作 ---------------------------------------------------------------
@@ -647,8 +787,8 @@ fn setting_row(
         ))
 }
 
-impl Render for WriterApp {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl WriterApp {
+    fn ui(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let __perf = std::env::var("BIZHEN_PERF").is_ok();
         let __t0 = std::time::Instant::now();
         // 异步对话框选好的文件在这里落盘/落编辑器（此处才有 Window）
@@ -683,6 +823,8 @@ impl Render for WriterApp {
         let tab = self.tab;
         let invert_x = self.invert_x;
         let invert_y = self.invert_y;
+        let left_w = self.left_w;
+        let right_w = self.right_w;
         let start_x = self.start_x;
         let start_y = self.start_y;
         let pan_x = self.pan_x;
@@ -763,40 +905,30 @@ impl Render for WriterApp {
             }
         };
 
-        let tabs = div()
-            .flex()
-            .items_center()
-            .bg(rgb(0x2a2a2a))
-            .border_b_1()
-            .border_color(rgb(0x383838))
-            .child(
-                div()
-                    .id("tab_md")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.tab = Tab::Markdown;
-                        cx.notify();
-                    }))
-                    .child(tab_style(tab == Tab::Markdown).child("Markdown")),
-            )
-            .child(
-                div()
-                    .id("tab_page")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.tab = Tab::Page;
-                        cx.notify();
-                    }))
-                    .child(tab_style(tab == Tab::Page).child("页面")),
-            );
+        let tabs = TabBar::new("main-tabs")
+            .segmented()
+            .selected_index(if tab == Tab::Markdown { 0 } else { 1 })
+            .on_click(cx.listener(|this, ix: &usize, _w, cx| {
+                this.tab = if *ix == 0 { Tab::Markdown } else { Tab::Page };
+                cx.notify();
+            }))
+            .child(KitTab::new().label("编辑"))
+            .child(KitTab::new().label("页面"));
 
-        let left_content = if tab == Tab::Markdown {
-            // Kit 的代码编辑器模式：行号 + Markdown 语法高亮 + 输入法
-            div().flex_1().min_h(px(0.)).p_2().child(
+        // Kit 的代码编辑器模式：行号 + Markdown 语法高亮 + 输入法
+        let md_panel: AnyElement = div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .p_2()
+            .child(
                 Editor::new(&self.editor)
                     .h_full()
                     .w_full()
                     .text_size(px(EDITOR_TEXT_SIZE)),
             )
-        } else {
+            .into_any_element();
+        let page_panel: AnyElement = {
             // 纸张：Kit 下拉菜单（预设 + 自定义）
             let paper_menu = {
                 let weak = cx.entity().downgrade();
@@ -897,23 +1029,20 @@ impl Render for WriterApp {
                         a.relayout();
                     },
                 ));
-            div().flex_1().min_h(px(0.)).overflow_hidden().child(panel)
+            div()
+                .flex_1()
+                .min_h(px(0.))
+                .overflow_hidden()
+                .child(panel)
+                .into_any_element()
         };
-
-        let left = div()
-            .w(px(400.))
-            .flex()
-            .flex_col()
-            .border_r_1()
-            .border_color(rgb(0x333333))
-            .child(tabs)
-            .child(left_content);
 
         // ---------------- 中间预览 ----------------
         let page_w = page.width;
         let page_h = page.height;
 
         let preview = div()
+            .id(SharedString::from("preview_area"))
             .flex_1()
             .min_w(px(0.))
             .h_full()
@@ -923,7 +1052,7 @@ impl Render for WriterApp {
                     gpui::ScrollDelta::Pixels(p) => f32::from(p.y) / 50.0,
                     gpui::ScrollDelta::Lines(p) => p.y,
                 };
-                let step = dy * 0.08;
+                let step = -dy * 0.08; // 滚轮上 = 放大
                 this.zoom = (this.zoom * (1.0 + step)).clamp(0.2, 8.0);
                 cx.notify();
             }))
@@ -1211,30 +1340,19 @@ impl Render for WriterApp {
                 .child(self.num_row("jog_feed", "速度 (mm/min)", 250.0, window, cx));
 
         // 方向键按十字排：上 / 左·右 / 下
-        let jog_button = |id: &str, label: &str, dx: f64, dy: f64| {
-            div()
-                .id(SharedString::from(id.to_string()))
-                .w(px(52.))
-                .py_1()
-                .rounded_md()
-                .bg(rgb(0x3a3a3a))
-                .text_xs()
-                .text_color(rgb(0xe0e0e0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .hover(|s| s.bg(rgb(0x4a4a4a)))
-                .child(label.to_string())
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.machine.send(machine::Cmd::Jog {
-                        dx,
-                        dy,
-                        step: this.jog_step,
-                        feed: this.jog_feed,
-                    });
-                    this.poke();
-                    cx.notify();
-                }))
+        // 方向键：Kit Button（十字排列）
+        let mut jog_button = |id: &str, label: &str, dx: f64, dy: f64| {
+            button(id, label, cx, move |this, _w, cx| {
+                this.machine.send(machine::Cmd::Jog {
+                    dx,
+                    dy,
+                    step: this.jog_step,
+                    feed: this.jog_feed,
+                });
+                this.poke();
+                cx.notify();
+            })
+            .into_any_element()
         };
         machine_panel = machine_panel
             .child(
@@ -1351,13 +1469,6 @@ impl Render for WriterApp {
                     }),
             );
 
-        let right = div()
-            .w(px(300.))
-            .h_full()
-            .border_l_1()
-            .border_color(rgb(0x333333))
-            .child(machine_panel);
-
         // ---------------- 底部 ----------------
         let footer = div()
             .flex()
@@ -1388,14 +1499,48 @@ impl Render for WriterApp {
             .size_full()
             .bg(rgb(0x1b1b1b));
         root = root.child(header);
+        let left = div()
+            .w(px(left_w))
+            .h_full()
+            .flex()
+            .flex_col()
+            .border_r_1()
+            .border_color(rgb(0x333333))
+            .child(tabs)
+            .child(if tab == Tab::Markdown {
+                md_panel
+            } else {
+                page_panel
+            });
+
+        let right = div()
+            .w(px(right_w))
+            .h_full()
+            .border_l_1()
+            .border_color(rgb(0x333333))
+            .id(SharedString::from("machine_scroll"))
+            .overflow_y_scroll()
+            .child(machine_panel);
+
+        // 侧栏上限按窗口宽度算：左 50%、右 20%
+        let win_w = f32::from(window.bounds().size.width);
         root = root.child(
-            div()
-                .flex()
-                .flex_1()
-                .min_h(px(0.))
-                .child(left)
-                .child(preview)
-                .child(right),
+            div().w_full().h_full().flex_1().min_h(px(0.)).child(
+                h_resizable("bizhen-layout")
+                    .child(
+                        resizable_panel()
+                            .size(px(460.))
+                            .size_range(px(280.)..px((win_w * 0.5).max(280.)))
+                            .child(left),
+                    )
+                    .child(resizable_panel().child(preview))
+                    .child(
+                        resizable_panel()
+                            .size(px(360.))
+                            .size_range(px(200.)..px((win_w * 0.2).max(200.)))
+                            .child(right),
+                    ),
+            ),
         );
         root = root.child(footer);
 
@@ -1420,7 +1565,19 @@ impl Render for WriterApp {
             cx.on_next_frame(window, |this, window, cx| Self::tick(this, window, cx));
         }
 
-        root
+        root.into_any_element()
+    }
+
+    /// 首次渲染时构建 Dock：左＝Markdown/页面，中＝预览，右＝机器控制
+
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ui(window, cx)
+    }
+}
+
+impl Render for WriterApp {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ui(window, cx)
     }
 }
 
@@ -1497,6 +1654,38 @@ fn w_param(
 }
 
 /// 「字体与手写抖动」的弹窗内容。
+/// 字体样张：把归一化折线画进一个小画布。
+fn font_sample_canvas(index: usize, samples: &[Vec<Vec<(f32, f32)>>]) -> AnyElement {
+    let polys = samples.get(index).cloned().unwrap_or_default();
+    let (pw, ph) = (46.0f32, 14.0f32);
+    div()
+        .w(px(pw))
+        .h(px(ph))
+        .child(canvas(
+            move |_, _, _| {},
+            move |bounds, _, window, _cx| {
+                let ox = f32::from(bounds.origin.x);
+                let oy = f32::from(bounds.origin.y);
+                let mut b = PathBuilder::stroke(px(1.0));
+                for poly in &polys {
+                    for (i, (x, y)) in poly.iter().enumerate() {
+                        let sx = ox + x * pw * 0.9 + 2.0;
+                        let sy = oy + y * ph * 0.9 + 1.0;
+                        if i == 0 {
+                            b.move_to(point(px(sx), px(sy)));
+                        } else {
+                            b.line_to(point(px(sx), px(sy)));
+                        }
+                    }
+                }
+                if let Ok(path) = b.build() {
+                    window.paint_path(path, rgb(0xc8c8c8));
+                }
+            },
+        ))
+        .into_any_element()
+}
+
 fn build_style_dialog(dialog: Dialog, weak: &WeakEntity<WriterApp>, cx: &mut App) -> Dialog {
     const PER_PAGE: usize = 9;
 
@@ -1583,8 +1772,22 @@ fn build_style_dialog(dialog: Dialog, weak: &WeakEntity<WriterApp>, cx: &mut App
     }
 
     // ---- 可选字体（分页）----
+    // 预取本页字体的样张（首帧解析一次，之后走缓存）
+    let _ = weak.update(cx, |app, _| {
+        for (n, _, _) in &entries[start..end] {
+            app.ensure_sample(n);
+        }
+    });
+    let samples: Vec<Vec<Vec<(f32, f32)>>> = weak
+        .read_with(cx, |app, _| {
+            entries[start..end]
+                .iter()
+                .map(|(n, _, _)| app.font_samples.get(n).cloned().unwrap_or_default())
+                .collect()
+        })
+        .unwrap_or_default();
     let mut font_grid = div().flex().flex_wrap().gap_1();
-    for (name, display, kind) in &entries[start..end] {
+    for (index, (name, display, kind)) in entries[start..end].iter().enumerate() {
         let chosen = chain.iter().any(|c| c == name);
         let label = if chosen {
             format!("✓ {display}")
@@ -1599,6 +1802,7 @@ fn build_style_dialog(dialog: Dialog, weak: &WeakEntity<WriterApp>, cx: &mut App
         };
         font_grid = font_grid.child(
             div()
+                .child(font_sample_canvas(index, &samples))
                 .flex()
                 .items_center()
                 .gap_1()
