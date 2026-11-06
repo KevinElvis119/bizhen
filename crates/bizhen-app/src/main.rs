@@ -27,6 +27,7 @@ use gpui_kit::component::dock::{
 };
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::component::WindowExt;
 
 use bizhen_core::font::FontRegistry;
@@ -1353,30 +1354,19 @@ impl WriterApp {
                 .child(self.num_row("jog_feed", "速度 (mm/min)", 250.0, window, cx));
 
         // 方向键按十字排：上 / 左·右 / 下
-        let jog_button = |id: &str, label: &str, dx: f64, dy: f64| {
-            div()
-                .id(SharedString::from(id.to_string()))
-                .w(px(52.))
-                .py_1()
-                .rounded_md()
-                .bg(rgb(0x3a3a3a))
-                .text_xs()
-                .text_color(rgb(0xe0e0e0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .hover(|s| s.bg(rgb(0x4a4a4a)))
-                .child(label.to_string())
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.machine.send(machine::Cmd::Jog {
-                        dx,
-                        dy,
-                        step: this.jog_step,
-                        feed: this.jog_feed,
-                    });
-                    this.poke();
-                    cx.notify();
-                }))
+        // 方向键：Kit Button（十字排列）
+        let mut jog_button = |id: &str, label: &str, dx: f64, dy: f64| {
+            button(id, label, cx, move |this, _w, cx| {
+                this.machine.send(machine::Cmd::Jog {
+                    dx,
+                    dy,
+                    step: this.jog_step,
+                    feed: this.jog_feed,
+                });
+                this.poke();
+                cx.notify();
+            })
+            .into_any_element()
         };
         machine_panel = machine_panel
             .child(
@@ -1547,15 +1537,22 @@ impl WriterApp {
             .child(machine_panel);
 
         root = root.child(
-            div()
-                .flex()
-                .flex_1()
-                .min_h(px(0.))
-                .child(left)
-                .child(self.resize_handle(1, cx))
-                .child(preview)
-                .child(self.resize_handle(2, cx))
-                .child(right),
+            div().w_full().h_full().flex_1().min_h(px(0.)).child(
+                h_resizable("bizhen-layout")
+                    .child(
+                        resizable_panel()
+                            .size(px(460.))
+                            .size_range(px(280.)..px(900.))
+                            .child(left),
+                    )
+                    .child(resizable_panel().child(preview))
+                    .child(
+                        resizable_panel()
+                            .size(px(360.))
+                            .size_range(px(240.)..px(800.))
+                            .child(right),
+                    ),
+            ),
         );
         root = root.child(footer);
 
