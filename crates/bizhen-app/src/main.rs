@@ -987,6 +987,7 @@ impl WriterApp {
         let page_h = page.height;
 
         let preview = div()
+            .id(SharedString::from("preview_area"))
             .flex_1()
             .min_w(px(0.))
             .h_full()
@@ -1484,8 +1485,40 @@ impl WriterApp {
             Part::All => root.into_any_element(),
             Part::Markdown => md_panel,
             Part::Page => page_panel,
-            Part::Preview => preview.into_any_element(),
-            Part::Machine => machine_panel.into_any_element(),
+            Part::Preview => div()
+                .relative()
+                .size_full()
+                .child(preview)
+                // 缩放/平移的显式控件（滚轮与右键拖动之外的兜底入口）
+                .child(
+                    div()
+                        .absolute()
+                        .top_2()
+                        .right_2()
+                        .flex()
+                        .gap_1()
+                        .child(button("zoom_out", "−", cx, |a, _w, cx| {
+                            a.zoom = (a.zoom * 0.8).max(0.2);
+                            cx.notify();
+                        }))
+                        .child(button("zoom_reset", "1:1", cx, |a, _w, cx| {
+                            a.zoom = 1.0;
+                            a.pan_x = 0.0;
+                            a.pan_y = 0.0;
+                            cx.notify();
+                        }))
+                        .child(button("zoom_in", "＋", cx, |a, _w, cx| {
+                            a.zoom = (a.zoom * 1.25).min(8.0);
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+            Part::Machine => div()
+                .id(SharedString::from("machine_scroll"))
+                .size_full()
+                .overflow_y_scroll()
+                .child(machine_panel)
+                .into_any_element(),
         }
     }
 
