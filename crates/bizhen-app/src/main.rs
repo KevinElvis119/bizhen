@@ -178,7 +178,8 @@ struct WriterApp {
     /// Dock 区域（首次渲染时构建）
     /// 所有 dock 面板：状态变化时逐个通知，预览才会即时重绘
     panels: Vec<Entity<AppPanel>>,
-    dock: Option<Entity<DockArea>>,
+    dock_left: Option<Entity<DockArea>>,
+    dock_right: Option<Entity<DockArea>>,
     font_page: usize,
 
     symbols: SymbolFonts,
@@ -261,7 +262,8 @@ impl WriterApp {
             pending_open: None,
             panels: Vec::new(),
             pending_font: None,
-            dock: None,
+            dock_left: None,
+            dock_right: None,
             font_page: 0,
             symbols,
             doc: RenderedDoc::default(),
@@ -1460,7 +1462,6 @@ impl WriterApp {
                 size_mm_footer, wrap_footer
             )));
 
-        let dock = self.dock_entity(window, cx);
         let mut root = div()
             .relative()
             .flex()
@@ -1468,7 +1469,15 @@ impl WriterApp {
             .size_full()
             .bg(rgb(0x1b1b1b));
         root = root.child(header);
-        root = root.child(div().flex().flex_1().min_h(px(0.)).child(dock));
+        root = root.child(
+            div()
+                .flex()
+                .flex_1()
+                .min_h(px(0.))
+                .child(div().w(px(400.)).h_full().child(self.dock_left_entity(window, cx)))
+                .child(preview)
+                .child(div().w(px(300.)).h_full().child(self.dock_right_entity(window, cx))),
+        );
         root = root.child(footer);
 
         // 冒烟/演示：首帧自动打开弹窗
@@ -1497,34 +1506,7 @@ impl WriterApp {
             Part::All => root.into_any_element(),
             Part::Markdown => md_panel,
             Part::Page => page_panel,
-            Part::Preview => div()
-                .relative()
-                .size_full()
-                .child(preview)
-                // 缩放/平移的显式控件（滚轮与右键拖动之外的兜底入口）
-                .child(
-                    div()
-                        .absolute()
-                        .top_2()
-                        .right_2()
-                        .flex()
-                        .gap_1()
-                        .child(button("zoom_out", "−", cx, |a, _w, cx| {
-                            a.zoom = (a.zoom * 0.8).max(0.2);
-                            a.notify_all(cx);
-                        }))
-                        .child(button("zoom_reset", "1:1", cx, |a, _w, cx| {
-                            a.zoom = 1.0;
-                            a.pan_x = 0.0;
-                            a.pan_y = 0.0;
-                            a.notify_all(cx);
-                        }))
-                        .child(button("zoom_in", "＋", cx, |a, _w, cx| {
-                            a.zoom = (a.zoom * 1.25).min(8.0);
-                            a.notify_all(cx);
-                        })),
-                )
-                .into_any_element(),
+            Part::Preview => div().into_any_element(),
             Part::Machine => div()
                 .id(SharedString::from("machine_scroll"))
                 .size_full()
@@ -1535,37 +1517,47 @@ impl WriterApp {
     }
 
     /// 首次渲染时构建 Dock：左＝Markdown/页面，中＝预览，右＝机器控制
-    fn dock_entity(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        if let Some(area) = &self.dock {
-            return area.clone().into_any_element();
+    fn dock_left_entity(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(a) = &self.dock_left {
+            return a.clone().into_any_element();
         }
         let weak = cx.entity().downgrade();
-        let (area, _skin) = DockSkin::dock_area("bizhen-dock", None, window, cx);
+        let (area, _skin) = DockSkin::dock_area("bizhen-dock-left", None, window, cx);
         let md = cx.new(|cx| AppPanel::new(Part::Markdown, weak.clone(), cx));
         let page = cx.new(|cx| AppPanel::new(Part::Page, weak.clone(), cx));
-        let prev = cx.new(|cx| AppPanel::new(Part::Preview, weak.clone(), cx));
-        let mac = cx.new(|cx| AppPanel::new(Part::Machine, weak.clone(), cx));
         self.panels.push(md.clone());
         self.panels.push(page.clone());
-        self.panels.push(mac.clone());
         area.update(cx, |area, cx| {
-            area.set_center(DockLayout::tabs().panel(prev), window, cx);
             area.set_dock(
                 DockPlacement::Left,
                 DockLayout::tabs().panel(md).panel(page),
                 window,
                 cx,
             );
+            area.set_dock_size(DockPlacement::Left, px(400.), window, cx);
+        });
+        self.dock_left = Some(area.clone());
+        area.into_any_element()
+    }
+
+    fn dock_right_entity(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(a) = &self.dock_right {
+            return a.clone().into_any_element();
+        }
+        let weak = cx.entity().downgrade();
+        let (area, _skin) = DockSkin::dock_area("bizhen-dock-right", None, window, cx);
+        let mac = cx.new(|cx| AppPanel::new(Part::Machine, weak.clone(), cx));
+        self.panels.push(mac.clone());
+        area.update(cx, |area, cx| {
             area.set_dock(
                 DockPlacement::Right,
                 DockLayout::tabs().panel(mac),
                 window,
                 cx,
             );
-            area.set_dock_size(DockPlacement::Left, px(400.), window, cx);
             area.set_dock_size(DockPlacement::Right, px(300.), window, cx);
         });
-        self.dock = Some(area.clone());
+        self.dock_right = Some(area.clone());
         area.into_any_element()
     }
 
