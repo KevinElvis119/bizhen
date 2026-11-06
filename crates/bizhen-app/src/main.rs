@@ -176,6 +176,8 @@ struct WriterApp {
     /// 异步对话框选好的待导入字体
     pending_font: Option<std::path::PathBuf>,
     /// Dock 区域（首次渲染时构建）
+    /// 所有 dock 面板：状态变化时逐个通知，预览才会即时重绘
+    panels: Vec<Entity<AppPanel>>,
     dock: Option<Entity<DockArea>>,
     font_page: usize,
 
@@ -257,6 +259,7 @@ impl WriterApp {
             // 演示/冒烟：BIZHEN_DEMO_DIALOG=1 启动即打开弹窗
             auto_dialog: std::env::var("BIZHEN_DEMO_DIALOG").is_ok(),
             pending_open: None,
+            panels: Vec::new(),
             pending_font: None,
             dock: None,
             font_page: 0,
@@ -335,6 +338,15 @@ impl WriterApp {
     }
 
     // ---------------- 数值输入行 ----------------
+
+    /// 状态变化后通知主视图与所有面板：预览的 canvas 属于面板，
+    /// 只 notify 主视图时它不会重绘（表现为缩放/拖动要等下一次事件才刷新）。
+    fn notify_all(&self, cx: &mut Context<Self>) {
+        cx.notify();
+        for panel in &self.panels {
+            panel.update(cx, |_, cx| cx.notify());
+        }
+    }
 
     fn num_value(&self, id: &str) -> f64 {
         match id {
@@ -997,16 +1009,16 @@ impl WriterApp {
                     gpui::ScrollDelta::Pixels(p) => f32::from(p.y) / 50.0,
                     gpui::ScrollDelta::Lines(p) => p.y,
                 };
-                let step = dy * 0.08;
+                let step = -dy * 0.08; // 滚轮上 = 放大
                 this.zoom = (this.zoom * (1.0 + step)).clamp(0.2, 8.0);
-                cx.notify();
+                this.notify_all(cx);
             }))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, ev: &MouseDownEvent, _w, cx| {
                     this.panning = true;
                     this.last_mouse = (ev.position.x.into(), ev.position.y.into());
-                    cx.notify();
+                    this.notify_all(cx);
                 }),
             )
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _w, cx| {
@@ -1016,14 +1028,14 @@ impl WriterApp {
                     this.pan_x += x - this.last_mouse.0;
                     this.pan_y += y - this.last_mouse.1;
                     this.last_mouse = (x, y);
-                    cx.notify();
+                    this.notify_all(cx);
                 }
             }))
             .on_mouse_up(
                 MouseButton::Right,
                 cx.listener(|this, _ev: &MouseUpEvent, _w, cx| {
                     this.panning = false;
-                    cx.notify();
+                    this.notify_all(cx);
                 }),
             )
             .child(
@@ -1499,17 +1511,17 @@ impl WriterApp {
                         .gap_1()
                         .child(button("zoom_out", "−", cx, |a, _w, cx| {
                             a.zoom = (a.zoom * 0.8).max(0.2);
-                            cx.notify();
+                            a.notify_all(cx);
                         }))
                         .child(button("zoom_reset", "1:1", cx, |a, _w, cx| {
                             a.zoom = 1.0;
                             a.pan_x = 0.0;
                             a.pan_y = 0.0;
-                            cx.notify();
+                            a.notify_all(cx);
                         }))
                         .child(button("zoom_in", "＋", cx, |a, _w, cx| {
                             a.zoom = (a.zoom * 1.25).min(8.0);
-                            cx.notify();
+                            a.notify_all(cx);
                         })),
                 )
                 .into_any_element(),
@@ -1533,6 +1545,9 @@ impl WriterApp {
         let page = cx.new(|cx| AppPanel::new(Part::Page, weak.clone(), cx));
         let prev = cx.new(|cx| AppPanel::new(Part::Preview, weak.clone(), cx));
         let mac = cx.new(|cx| AppPanel::new(Part::Machine, weak.clone(), cx));
+        self.panels.push(md.clone());
+        self.panels.push(page.clone());
+        self.panels.push(mac.clone());
         area.update(cx, |area, cx| {
             area.set_center(DockLayout::tabs().panel(prev), window, cx);
             area.set_dock(
