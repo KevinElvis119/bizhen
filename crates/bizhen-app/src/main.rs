@@ -15,20 +15,19 @@ mod machine;
 
 use gpui::{
     canvas, div, point, prelude::*, px, quad, rgb, size, AnyElement, App, Bounds, ContentMask,
-    Context, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent,
-    PathBuilder, Render, ScrollEvent, SharedString, Subscription, WeakEntity, Window, WindowBounds,
-    WindowOptions,
+    Context, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PathBuilder, Render, ScrollEvent, SharedString, Subscription,
+    WeakEntity, Window, WindowBounds, WindowOptions,
 };
 use gpui_kit::component::button::Button;
 use gpui_kit::component::dialog::Dialog;
-use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
-use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::WindowExt;
 use gpui_kit::component::dock::{
     BasePanel, DockArea, DockLayout, DockPlacement, DockSkin, Panel as KitPanel, PanelEvent,
     PanelState,
 };
+use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::WindowExt;
 
 use bizhen_core::font::FontRegistry;
 use bizhen_core::gcode::{self, GCodeConfig};
@@ -40,94 +39,8 @@ use bizhen_core::Stroke;
 
 use machine::Machine;
 
-
 // ---------------- Dock 面板 ----------------
 
-/// 面板内容分区：同一个 WriterApp 的 render 体按分区返回不同片段。
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Part {
-    All,
-    Markdown,
-    Page,
-    Preview,
-    Machine,
-}
-
-impl Part {
-    fn label(self) -> &'static str {
-        match self {
-            Part::All => "笔阵",
-            Part::Markdown => "编辑",
-            Part::Page => "页面",
-            Part::Preview => "预览",
-            Part::Machine => "机器控制",
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            Part::All => "All",
-            Part::Markdown => "Markdown",
-            Part::Page => "Page",
-            Part::Preview => "Preview",
-            Part::Machine => "Machine",
-        }
-    }
-}
-
-/// 侧栏面板：内容由 WriterApp 渲染（`app.update` 取得），自身不持有状态。
-struct AppPanel {
-    part: Part,
-    app: WeakEntity<WriterApp>,
-    focus: FocusHandle,
-}
-
-impl AppPanel {
-    fn new(part: Part, app: WeakEntity<WriterApp>, cx: &mut Context<Self>) -> Self {
-        Self {
-            part,
-            app,
-            focus: cx.focus_handle(),
-        }
-    }
-}
-
-impl BasePanel for AppPanel {
-    fn panel_name(&self) -> &'static str {
-        self.part.label()
-    }
-
-    fn dump(&self, _: &App) -> PanelState {
-        PanelState::new(self.part.name())
-    }
-}
-
-impl KitPanel for AppPanel {
-    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
-        Some(SharedString::from(self.part.label()))
-    }
-
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().text_sm().child(self.part.label())
-    }
-}
-
-impl EventEmitter<PanelEvent> for AppPanel {}
-
-impl Focusable for AppPanel {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus.clone()
-    }
-}
-
-impl Render for AppPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let part = self.part;
-        self.app
-            .update(cx, |app, cx| app.ui(window, cx, part))
-            .unwrap_or_else(|_| div().into_any_element())
-    }
-}
 /// 纸张预设（mm，纵向：名称、宽、高、页边距）
 const PRESETS: &[(&str, f64, f64, f64)] = &[
     ("A4", 210.0, 297.0, 10.0),
@@ -175,9 +88,6 @@ struct WriterApp {
     pending_open: Option<(String, String)>,
     /// 异步对话框选好的待导入字体
     pending_font: Option<std::path::PathBuf>,
-    /// Dock 区域（首次渲染时构建）
-    /// 所有 dock 面板：状态变化时逐个通知，预览才会即时重绘
-    panels: Vec<Entity<AppPanel>>,
     /// 字体样张（归一化 0..1 折线），按字体名缓存
     font_samples: std::collections::HashMap<String, Vec<Vec<(f32, f32)>>>,
     /// 左右侧栏宽度（可拖拽分隔条调整）
@@ -185,8 +95,6 @@ struct WriterApp {
     right_w: f32,
     resize_side: u8,
     resize_from: (f32, f32),
-    dock_left: Option<Entity<DockArea>>,
-    dock_right: Option<Entity<DockArea>>,
     font_page: usize,
 
     symbols: SymbolFonts,
@@ -267,15 +175,12 @@ impl WriterApp {
             // 演示/冒烟：BIZHEN_DEMO_DIALOG=1 启动即打开弹窗
             auto_dialog: std::env::var("BIZHEN_DEMO_DIALOG").is_ok(),
             pending_open: None,
-            panels: Vec::new(),
             font_samples: std::collections::HashMap::new(),
             left_w: 460.0,
             right_w: 360.0,
             resize_side: 0,
             resize_from: (0.0, 0.0),
             pending_font: None,
-            dock_left: None,
-            dock_right: None,
             font_page: 0,
             symbols,
             doc: RenderedDoc::default(),
@@ -355,12 +260,6 @@ impl WriterApp {
 
     /// 状态变化后通知主视图与所有面板：预览的 canvas 属于面板，
     /// 只 notify 主视图时它不会重绘（表现为缩放/拖动要等下一次事件才刷新）。
-    fn notify_all(&self, cx: &mut Context<Self>) {
-        cx.notify();
-        for panel in &self.panels {
-            panel.update(cx, |_, cx| cx.notify());
-        }
-    }
 
     /// 生成（并缓存）某款字体的样张折线：归一化到 0..1，y 已翻转为屏幕方向。
     fn ensure_sample(&mut self, name: &str) {
@@ -387,7 +286,11 @@ impl WriterApp {
                 }
                 raw.push(s.iter().map(|p| (x + p.0, p.1)).collect());
             }
-            x += if g.advance > 0.0 { g.advance } else { f.default_advance };
+            x += if g.advance > 0.0 {
+                g.advance
+            } else {
+                f.default_advance
+            };
         }
         if raw.is_empty() {
             return;
@@ -676,9 +579,15 @@ impl WriterApp {
         self.relayout();
         let after = self.registry.entries().len();
         if after > before {
-            format!("已导入 {}（字体 {before} → {after}）", file_name.to_string_lossy())
+            format!(
+                "已导入 {}（字体 {before} → {after}）",
+                file_name.to_string_lossy()
+            )
         } else {
-            format!("已复制 {}，但字库未识别（支持 .gfont/.jhf/.json）", file_name.to_string_lossy())
+            format!(
+                "已复制 {}，但字库未识别（支持 .gfont/.jhf/.json）",
+                file_name.to_string_lossy()
+            )
         }
     }
 
@@ -877,7 +786,7 @@ fn setting_row(
 }
 
 impl WriterApp {
-    fn ui(&mut self, window: &mut Window, cx: &mut Context<Self>, part: Part) -> AnyElement {
+    fn ui(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let __perf = std::env::var("BIZHEN_PERF").is_ok();
         let __t0 = std::time::Instant::now();
         // 异步对话框选好的文件在这里落盘/落编辑器（此处才有 Window）
@@ -1019,7 +928,6 @@ impl WriterApp {
                     .child(tab_style(tab == Tab::Page).child("页面")),
             );
 
-
         // Kit 的代码编辑器模式：行号 + Markdown 语法高亮 + 输入法
         let md_panel: AnyElement = div()
             .flex()
@@ -1159,14 +1067,14 @@ impl WriterApp {
                 };
                 let step = -dy * 0.08; // 滚轮上 = 放大
                 this.zoom = (this.zoom * (1.0 + step)).clamp(0.2, 8.0);
-                this.notify_all(cx);
+                cx.notify();
             }))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, ev: &MouseDownEvent, _w, cx| {
                     this.panning = true;
                     this.last_mouse = (ev.position.x.into(), ev.position.y.into());
-                    this.notify_all(cx);
+                    cx.notify();
                 }),
             )
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _w, cx| {
@@ -1176,14 +1084,14 @@ impl WriterApp {
                     this.pan_x += x - this.last_mouse.0;
                     this.pan_y += y - this.last_mouse.1;
                     this.last_mouse = (x, y);
-                    this.notify_all(cx);
+                    cx.notify();
                 }
             }))
             .on_mouse_up(
                 MouseButton::Right,
                 cx.listener(|this, _ev: &MouseUpEvent, _w, cx| {
                     this.panning = false;
-                    this.notify_all(cx);
+                    cx.notify();
                 }),
             )
             .child(
@@ -1672,63 +1580,19 @@ impl WriterApp {
             cx.on_next_frame(window, |this, window, cx| Self::tick(this, window, cx));
         }
 
-
         root.into_any_element()
     }
 
     /// 首次渲染时构建 Dock：左＝Markdown/页面，中＝预览，右＝机器控制
-    fn dock_left_entity(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        if let Some(a) = &self.dock_left {
-            return a.clone().into_any_element();
-        }
-        let weak = cx.entity().downgrade();
-        let (area, _skin) = DockSkin::dock_area("bizhen-dock-left", None, window, cx);
-        let md = cx.new(|cx| AppPanel::new(Part::Markdown, weak.clone(), cx));
-        let page = cx.new(|cx| AppPanel::new(Part::Page, weak.clone(), cx));
-        self.panels.push(md.clone());
-        self.panels.push(page.clone());
-        area.update(cx, |area, cx| {
-            area.set_dock(
-                DockPlacement::Left,
-                DockLayout::tabs().panel(md).panel(page),
-                window,
-                cx,
-            );
-            area.set_dock_size(DockPlacement::Left, px(460.), window, cx);
-        });
-        self.dock_left = Some(area.clone());
-        area.into_any_element()
-    }
-
-    fn dock_right_entity(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        if let Some(a) = &self.dock_right {
-            return a.clone().into_any_element();
-        }
-        let weak = cx.entity().downgrade();
-        let (area, _skin) = DockSkin::dock_area("bizhen-dock-right", None, window, cx);
-        let mac = cx.new(|cx| AppPanel::new(Part::Machine, weak.clone(), cx));
-        self.panels.push(mac.clone());
-        area.update(cx, |area, cx| {
-            area.set_dock(
-                DockPlacement::Right,
-                DockLayout::tabs().panel(mac),
-                window,
-                cx,
-            );
-            area.set_dock_size(DockPlacement::Right, px(360.), window, cx);
-        });
-        self.dock_right = Some(area.clone());
-        area.into_any_element()
-    }
 
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.ui(window, cx, Part::All)
+        self.ui(window, cx)
     }
 }
 
 impl Render for WriterApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.ui(window, cx, Part::All)
+        self.ui(window, cx)
     }
 }
 
@@ -1953,7 +1817,7 @@ fn build_style_dialog(dialog: Dialog, weak: &WeakEntity<WriterApp>, cx: &mut App
         };
         font_grid = font_grid.child(
             div()
-                    .child(font_sample_canvas(index, &samples))
+                .child(font_sample_canvas(index, &samples))
                 .flex()
                 .items_center()
                 .gap_1()
@@ -2188,5 +2052,4 @@ fn main() {
         cx.on_window_closed(|cx, _| cx.quit()).detach();
         cx.activate(true);
     });
-
 }
