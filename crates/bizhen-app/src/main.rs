@@ -23,7 +23,6 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::dialog::Dialog;
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::component::tab::{Tab as KitTab, TabBar};
 use gpui_kit::component::WindowExt;
 
@@ -89,6 +88,8 @@ struct WriterApp {
     /// 字体样张（归一化 0..1 折线），按字体名缓存
     font_samples: std::collections::HashMap<String, Vec<Vec<(f32, f32)>>>,
     /// 右侧机器面板是否显示（折叠 = 隐藏）
+    /// 页面设置面板是否显示
+    page_visible: bool,
     right_visible: bool,
     /// 左右侧栏宽度（可拖拽分隔条调整）
     left_w: f32,
@@ -174,6 +175,7 @@ impl WriterApp {
             auto_dialog: std::env::var("BIZHEN_DEMO_DIALOG").is_ok(),
             pending_open: None,
             font_samples: std::collections::HashMap::new(),
+            page_visible: true,
             right_visible: true,
             left_w: 460.0,
             right_w: 360.0,
@@ -780,6 +782,7 @@ impl WriterApp {
         let invert_x = self.invert_x;
         let invert_y = self.invert_y;
         let win_w = f32::from(window.viewport_size().width).max(800.0);
+        let page_visible = self.page_visible;
         let right_visible = self.right_visible;
         let left_w = self.left_w;
         let right_w = self.right_w;
@@ -826,6 +829,15 @@ impl WriterApp {
                 cx,
                 |_this, window, cx| {
                     open_style_dialog(window, cx);
+                },
+            ))
+            .child(button(
+                "toggle_page",
+                if page_visible { "隐藏页面" } else { "显示页面" },
+                cx,
+                |this, _w, cx| {
+                    this.page_visible = !this.page_visible;
+                    cx.notify();
                 },
             ))
             .child(button(
@@ -1457,40 +1469,35 @@ impl WriterApp {
             .size_full()
             .bg(rgb(0x1b1b1b));
         root = root.child(header);
-        let left = div()
-            .w(px(left_w))
+
+        // 四个面板：页面设置（可隐藏）| 内容编辑 | 内容预览 | 机器控制（可隐藏）
+        let page_col = div()
+            .w(px(280.))
+            .flex_none()
             .h_full()
-            .flex()
-            .flex_col()
             .border_r_1()
             .border_color(rgb(0x333333))
-            .child(tabs)
-            .child(if tab == Tab::Markdown {
-                md_panel
-            } else {
-                page_panel
-            });
+            .id(SharedString::from("page_scroll"))
+            .overflow_y_scroll()
+            .child(page_panel);
 
-        let right = div()
-            .w(px(right_w))
+        let edit_col = div()
+            .w(px(420.))
+            .flex_none()
+            .h_full()
+            .border_r_1()
+            .border_color(rgb(0x333333))
+            .child(md_panel);
+
+        let machine_col = div()
+            .w(px(300.))
+            .flex_none()
             .h_full()
             .border_l_1()
             .border_color(rgb(0x333333))
             .id(SharedString::from("machine_scroll"))
             .overflow_y_scroll()
             .child(machine_panel);
-
-        // 侧栏上限按窗口宽度算：左 50%、右 20%
-        // 只在「左栏 | 预览」之间保留一条可拖分隔线；右栏固定宽度、不进分组，
-        // 避免两条分隔线互相干扰
-        let layout = h_resizable("bizhen-layout")
-            .child(
-                resizable_panel()
-                    .size(px(460.))
-                    .size_range(px(280.)..px((win_w * 0.5).max(360.)))
-                    .child(left),
-            )
-            .child(resizable_panel().child(preview));
 
         root = root.child(
             div()
@@ -1499,10 +1506,10 @@ impl WriterApp {
                 .h_full()
                 .flex_1()
                 .min_h(px(0.))
-                .child(div().flex_1().h_full().min_w(px(0.)).child(layout))
-                .when(self.right_visible, |this| {
-                    this.child(div().w(px(320.)).h_full().child(right))
-                }),
+                .when(page_visible, |this| this.child(page_col))
+                .child(edit_col)
+                .child(div().flex().flex_1().h_full().min_w(px(0.)).child(preview))
+                .when(right_visible, |this| this.child(machine_col)),
         );
         root = root.child(footer);
 
@@ -1975,7 +1982,7 @@ fn main() {
             None,
             cx,
         );
-        let bounds = Bounds::centered(None, size(px(1000.), px(730.)), cx);
+        let bounds = Bounds::centered(None, size(px(1360.), px(860.)), cx);
         // 用 Kit 的入口打开窗口：它会挂上 Root，菜单/弹窗等浮层才有地方落
         gpui_kit::open_window(
             WindowOptions {
