@@ -271,3 +271,8 @@ cargo fmt
 1. 跑 `. .\scripts\dev.ps1`，`cargo test` 确认环境；
 2. 做 **M1.5 GPUI 冒烟**（最大不确定性，先排除）；
 3. 再做 M1 的 `stroke_json.rs`。
+
+---
+
+> **归档说明（2026-11-07）**：本文件是 M0–M5 阶段的原始任务清单与验收依据，已全部完成，
+> 现保留作历史记录。当前架构请见 `ARCHITECTURE.md`，开发流程见 `DEVELOPMENT.md`。

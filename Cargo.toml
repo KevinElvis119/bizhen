@@ -5,11 +5,15 @@ members = ["crates/bizhen-core", "crates/bizhen-cli", "crates/bizhen-app"]
 default-members = ["crates/bizhen-core", "crates/bizhen-cli"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.4.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/ZhengXieGang/WriterStudio"
 rust-version = "1.85"
+description = "笔阵 Bizhen：把手写机器人当作打印机的 Markdown 排版 / 生成 G-code 工具"
+readme = "README.md"
+keywords = ["gcode", "plotter", "markdown", "gpui", "calligraphy"]
+categories = ["gui", "graphics"]
 
 [workspace.dependencies]
 bizhen-core = { path = "crates/bizhen-core" }
