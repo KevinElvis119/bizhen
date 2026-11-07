@@ -545,7 +545,7 @@ impl WriterApp {
             )
         } else {
             format!(
-                "已复制 {}，但字库未识别（支持 .gfont/.jhf/.json）",
+                "已复制 {}，但字库未识别（支持 .jhf/.json）",
                 file_name.to_string_lossy()
             )
         }
@@ -1759,7 +1759,6 @@ fn build_style_dialog(dialog: Dialog, weak: &WeakEntity<WriterApp>, cx: &mut App
         };
         let n = name.clone();
         let tip = match kind.as_str() {
-            "gfont" => "gfont",
             "stroke-json" => "中文单线",
             _ => "Hershey",
         };

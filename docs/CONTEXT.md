@@ -450,3 +450,18 @@ pub fn send_program_controlled(&mut self, lines, progress, ctl, pen_up, pen_down
 
 实测：`陈继世6_kvenjoy_1.gfont` → 6909 字形 / 6.2 MB JSON，`bizhen-cli info chen6` 度量正常
 （ascent 1.0 / descent -0.2）。
+---
+
+## 17. gfont 解析代码移出主仓库（2026-11-07）
+
+`.gfont` 的解析与解密（XTEA 头 + ZIP 容器 + 字形记录）已整体移出本仓库，
+迁到独立项目 `E:\WritingRobot\gfont-tool`（二进制名 `gfont2json`，MIT）。
+
+主仓库现状：
+
+* `crates/bizhen-core/src/font/gfont.rs` 已删除，`font/mod.rs` 不再导出 `parse_gfont`
+* `bizhen-core` 的 `zip` 依赖一并移除（只被 gfont 用到）
+* `bizhen-cli` 的 `gfont2json` 子命令删除（转换交给外部工具）
+* 导入对话框只接受 `.json` / `.jhf`
+
+这样主仓库不再包含任何 `.gfont` 格式相关的代码，只吃转换后的纯文本 JSON。

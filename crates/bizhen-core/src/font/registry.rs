@@ -11,7 +11,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::font::gfont;
 use crate::font::jhf::parse_hershey_jhf;
 use crate::font::model::FontFamily;
 
@@ -166,7 +165,6 @@ impl FontRegistry {
                 "stroke-json" => {
                     crate::font::stroke_json::parse_stroke_json(&entry.path, Some(&entry.name)).ok()
                 }
-                "gfont" => gfont::parse_gfont(&entry.path, Some(&entry.name)).ok(),
                 _ => None,
             }?;
             self.loaded.insert(name.to_string(), fam);
