@@ -8,12 +8,10 @@ Thumbs.db
 *.log
 /out
 
-# 样例文档进版本库，生成的导出物不进
-/tests/*.json
-/tests/*.png
-/tests/*.svg
-/tests/*.gcode
-/target/app.*.txt
-
-# 本地实测用的 .gfont 样本（很大，不入库）
+# 本地测试产物（截图、导出物、临时样例）
+/tests/*
+!/tests/gfonts/
 /tests/gfonts/
+
+# 字体样本体积过大，不入库
+*.gfont

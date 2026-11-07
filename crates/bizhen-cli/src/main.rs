@@ -50,7 +50,6 @@ fn main() -> ExitCode {
     }
 }
 
-
 fn cmd_fonts() -> ExitCode {
     let reg = FontRegistry::builtin();
     let items: Vec<_> = reg

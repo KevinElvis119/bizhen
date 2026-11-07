@@ -15,15 +15,14 @@ mod machine;
 
 use gpui::{
     canvas, div, point, prelude::*, px, quad, rgb, size, AnyElement, App, Bounds, ContentMask,
-    Context, Entity, Focusable, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PathBuilder, Render, ScrollEvent, SharedString, Subscription,
-    WeakEntity, Window, WindowBounds, WindowOptions,
+    Context, Entity, Focusable, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    PathBuilder, Render, ScrollEvent, SharedString, Subscription, WeakEntity, Window, WindowBounds,
+    WindowOptions,
 };
 use gpui_kit::component::button::Button;
 use gpui_kit::component::dialog::Dialog;
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::tab::{Tab as KitTab, TabBar};
 use gpui_kit::component::WindowExt;
 
 use bizhen_core::font::FontRegistry;
@@ -55,18 +54,11 @@ const EDITOR_TEXT_SIZE: f32 = 13.0;
 
 const SAMPLE: &str = "# 静夜思\n\n床前明月光 疑是地上霜\n举头望明月 低头思故乡\n\n## 公式\n\n质能方程 $E = mc^2$，行内公式随正文重排。\n\n## 表格\n\n| 项目 | 数量 | 备注 |\n|:---|---:|:---:|\n| 笔 | 2 | 黑色 |\n| 纸 | 10 | A4 |\n\n![示意图](none.png){width=60,height=30}\n";
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Tab {
-    Markdown,
-    Page,
-}
-
 struct WriterApp {
     source: String,
     /// Kit 的多行输入状态：自带输入法组合、选区、撤销、鼠标定位
     editor: Entity<EditorState>,
     _editor_sub: Option<Subscription>,
-    tab: Tab,
 
     /// 当前纸张预设；None 表示自定义尺寸
     preset: Option<usize>,
@@ -91,9 +83,6 @@ struct WriterApp {
     /// 页面设置面板是否显示
     page_visible: bool,
     right_visible: bool,
-    /// 左右侧栏宽度（可拖拽分隔条调整）
-    left_w: f32,
-    right_w: f32,
     font_page: usize,
 
     symbols: SymbolFonts,
@@ -156,12 +145,6 @@ impl WriterApp {
             source,
             editor,
             _editor_sub: None,
-            // 冒烟/演示：BIZHEN_DEMO_TAB=page 启动即显示「页面」标签
-            tab: if std::env::var("BIZHEN_DEMO_TAB").as_deref() == Ok("page") {
-                Tab::Page
-            } else {
-                Tab::Markdown
-            },
             preset: Some(0),
             landscape: false,
             size_mm: 4.0,
@@ -177,8 +160,6 @@ impl WriterApp {
             font_samples: std::collections::HashMap::new(),
             page_visible: true,
             right_visible: true,
-            left_w: 460.0,
-            right_w: 360.0,
             pending_font: None,
             font_page: 0,
             symbols,
@@ -805,14 +786,11 @@ impl WriterApp {
             None => "自定义",
         };
         let landscape = self.landscape;
-        let tab = self.tab;
         let invert_x = self.invert_x;
         let invert_y = self.invert_y;
         let win_w = f32::from(window.viewport_size().width).max(800.0);
         let page_visible = self.page_visible;
         let right_visible = self.right_visible;
-        let left_w = self.left_w;
-        let right_w = self.right_w;
         let start_x = self.start_x;
         let start_y = self.start_y;
         let pan_x = self.pan_x;
@@ -860,7 +838,11 @@ impl WriterApp {
             ))
             .child(button(
                 "toggle_page",
-                if page_visible { "隐藏页面" } else { "显示页面" },
+                if page_visible {
+                    "隐藏页面"
+                } else {
+                    "显示页面"
+                },
                 cx,
                 |this, _w, cx| {
                     this.page_visible = !this.page_visible;
@@ -869,7 +851,11 @@ impl WriterApp {
             ))
             .child(button(
                 "toggle_machine",
-                if right_visible { "隐藏机器" } else { "显示机器" },
+                if right_visible {
+                    "隐藏机器"
+                } else {
+                    "显示机器"
+                },
                 cx,
                 |this, _w, cx| {
                     this.right_visible = !this.right_visible;
@@ -893,16 +879,6 @@ impl WriterApp {
             }));
 
         // ---------------- 左侧栏 ----------------
-
-        let tabs = TabBar::new("main-tabs")
-            .segmented()
-            .selected_index(if tab == Tab::Markdown { 0 } else { 1 })
-            .on_click(cx.listener(|this, ix: &usize, _w, cx| {
-                this.tab = if *ix == 0 { Tab::Markdown } else { Tab::Page };
-                cx.notify();
-            }))
-            .child(KitTab::new().label("编辑"))
-            .child(KitTab::new().label("页面"));
 
         // Kit 的代码编辑器模式：行号 + Markdown 语法高亮 + 输入法
         let md_panel: AnyElement = div()
@@ -1476,14 +1452,18 @@ impl WriterApp {
                     .text_color(rgb(0xa0a0a0))
                     .child(status),
             )
-            .child(div().text_xs().text_color(rgb(0x777777)).child(format!(
-                "缩放 {:.0}%",
-                self.zoom * 100.0
-            )))
-            .child(div().text_xs().text_color(rgb(0x777777)).child(format!(
-                "窗口 {:.0}",
-                win_w
-            )))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0x777777))
+                    .child(format!("缩放 {:.0}%", self.zoom * 100.0)),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0x777777))
+                    .child(format!("窗口 {:.0}", win_w)),
+            )
             .child(div().text_xs().text_color(rgb(0x777777)).child(format!(
                 "{:.1} mm · 折行 {:.0}",
                 size_mm_footer, wrap_footer
