@@ -465,3 +465,42 @@ pub fn send_program_controlled(&mut self, lines, progress, ctl, pen_up, pen_down
 * 导入对话框只接受 `.json` / `.jhf`
 
 这样主仓库不再包含任何 `.gfont` 格式相关的代码，只吃转换后的纯文本 JSON。
+---
+
+## 18. 分页发送与暂停/终止（2026-11-07）
+
+实测发现两个真问题。
+
+### 18.1 「发送作业」发的是整份文档
+
+`send_document()` 原来用 `self.doc.strokes()`，那是**所有页**的笔画拼起来，
+于是点一次「发送」会把全部页面按同一套坐标叠在一起画出去。
+
+改成只取当前预览页：
+
+```rust
+let strokes = self.doc.pages.get(self.page_index).map(|p| p.strokes.clone());
+```
+
+导出 G-code 同理（默认文件名带页码 `bizhen-p1.gcode`）。
+
+### 18.2 暂停/终止按了没反应
+
+`serial::send_program_controlled()` 是阻塞调用，worker 线程一旦进入它就不再
+`recv`，界面发出的 `Pause/Resume/Abort` 全堆在队列里，要等整个作业发完才被处理；
+更糟的是暂停后 core 在 `while paused { sleep }` 里自旋，**永远**读不到「继续」，
+只能杀进程。
+
+修法：给 `send_program_controlled` 加一个 `poll` 回调，在发送循环和暂停自旋里
+都调用一次；App 侧传入 `drain_control()`，把队列里的控制命令当场消费掉。
+
+```rust
+l.send_program_controlled(
+    &lines,
+    |done, total| { set(progress); drain_control(&rx, &ctl, &state); },
+    &ctl, &pen_up, &pen_down,
+    || drain_control(&rx, &ctl, &state),   // 暂停自旋期间也读命令
+);
+```
+
+顺带把「暂停中被终止」的顺序改了：先判 aborted 再发落笔，避免中止时还落一次笔。

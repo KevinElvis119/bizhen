@@ -89,6 +89,41 @@ fn set(state: &Arc<Mutex<State>>, f: impl FnOnce(&mut State)) {
     }
 }
 
+/// 作业进行中把命令队列里的控制命令消费掉。
+///
+/// `send_program_controlled` 是阻塞调用，worker 一旦进入它就不再 `recv`，
+/// 所以「暂停 / 继续 / 终止」必须在发送循环里主动 `try_recv`，否则按钮按了没反应。
+fn drain_control(
+    rx: &Receiver<Cmd>,
+    ctl: &std::sync::Arc<bizhen_core::serial::JobControl>,
+    state: &Arc<Mutex<State>>,
+) {
+    while let Ok(cmd) = rx.try_recv() {
+        match cmd {
+            Cmd::Pause => {
+                ctl.pause();
+                set(state, |s| {
+                    s.paused = true;
+                    s.message = "已暂停（先抬笔，再停投喂）".into();
+                });
+            }
+            Cmd::Resume => {
+                ctl.resume();
+                set(state, |s| {
+                    s.paused = false;
+                    s.message = "继续发送".into();
+                });
+            }
+            Cmd::Abort => {
+                ctl.abort();
+                set(state, |s| s.message = "正在中止…".into());
+            }
+            // 作业进行中的其它命令（点动、回零等）直接忽略，免得搅乱发送节奏
+            _ => {}
+        }
+    }
+}
+
 #[allow(unused_assignments)] // job 在其它 match 分支里读取，编译器按单次迭代看不出来
 fn worker(rx: Receiver<Cmd>, state: Arc<Mutex<State>>) {
     let mut link: Option<GrblLink> = None;
@@ -228,10 +263,14 @@ fn worker(rx: Receiver<Cmd>, state: Arc<Mutex<State>>) {
                     &lines,
                     |done, total| {
                         set(&state, |s| s.progress = (done, total));
+                        drain_control(&rx, &ctl, &state);
                     },
                     &ctl,
                     &pen_up,
                     &pen_down,
+                    // 暂停自旋期间也要把队列里的「继续 / 终止」读出来，
+                    // 否则一旦暂停就再没人处理命令，只能杀进程
+                    || drain_control(&rx, &ctl, &state),
                 );
                 job = None;
                 let sent = state.lock().map(|s| s.progress.0).unwrap_or(0);

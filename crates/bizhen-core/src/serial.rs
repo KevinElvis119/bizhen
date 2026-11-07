@@ -124,7 +124,7 @@ impl GrblLink {
         lines: &[String],
         progress: impl FnMut(usize, usize),
     ) -> Result<(), String> {
-        self.send_program_controlled(lines, progress, &JobControl::default(), &[], &[])
+        self.send_program_controlled(lines, progress, &JobControl::default(), &[], &[], || {})
             .map(|_| ())
     }
 
@@ -134,6 +134,9 @@ impl GrblLink {
     /// * 置为暂停 → 先发抬笔指令，停止投喂（在途运动走完自然停下，不洇墨）；
     /// * 恢复 → 先发落笔指令，继续投喂；
     /// * 中止 → 发软复位 `\x18` 清空气动缓冲，返回 `Ok(Aborted)`。
+    ///
+    /// `poll` 在每个循环周期都会被调用一次（包括暂停自旋期间），调用方用它来
+    /// 消费自己的命令队列——否则暂停时没人能读到「继续 / 终止」，作业会卡死。
     pub fn send_program_controlled(
         &mut self,
         lines: &[String],
@@ -141,6 +144,7 @@ impl GrblLink {
         ctl: &JobControl,
         pen_up: &[String],
         pen_down: &[String],
+        mut poll: impl FnMut(),
     ) -> Result<SendOutcome, String> {
         let total = lines.len();
         let mut pen_is_up = false;
@@ -160,20 +164,22 @@ impl GrblLink {
                 pen_is_up = true;
             }
             while ctl.paused() && !ctl.aborted() {
+                poll();
                 std::thread::sleep(std::time::Duration::from_millis(30));
             }
-            if pen_is_up {
-                for l in pen_down {
-                    self.send_line(l)?;
-                }
-                pen_is_up = false;
-            }
+            // 暂停中被终止：不要再落笔，直接软复位
             if ctl.aborted() {
                 self.port
                     .write_all(&[0x18])
                     .map_err(|e| format!("写入串口失败：{e}"))?;
                 self.port.flush().ok();
                 return Ok(SendOutcome::Aborted);
+            }
+            if pen_is_up {
+                for l in pen_down {
+                    self.send_line(l)?;
+                }
+                pen_is_up = false;
             }
             self.send_line(line)?;
             progress(i + 1, total);

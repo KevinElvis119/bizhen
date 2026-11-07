@@ -578,19 +578,34 @@ impl WriterApp {
     }
 
     /// 导出 G-code：同样用异步保存对话框。
+    ///
+    /// 只导出**当前页**——每页的坐标都是「相对本页左下角」，把所有页塞进一个
+    /// 文件会互相重叠。
     fn export_gcode(&mut self, cx: &mut Context<Self>) {
         let page = self.effective_page();
         let cfg = self.gcode_config();
-        let result = gcode::generate(&self.doc.strokes(), &cfg, page.height, None);
+        let strokes: Vec<Stroke> = self
+            .doc
+            .pages
+            .get(self.page_index)
+            .map(|p| p.strokes.clone())
+            .unwrap_or_default();
+        if strokes.is_empty() {
+            self.status = format!("第 {} 页没有内容", self.page_index + 1).into();
+            cx.notify();
+            return;
+        }
+        let result = gcode::generate(&strokes, &cfg, page.height, None);
         let text = result.text().to_string();
         let summary = format!(
             "绘制 {:.1} mm · 预计 {}",
             result.draw_length,
             gcode::format_duration(result.estimated_seconds)
         );
+        let default_name = format!("bizhen-p{}.gcode", self.page_index + 1);
         cx.spawn(async move |this, cx| {
             let picked = rfd::AsyncFileDialog::new()
-                .set_file_name("bizhen.gcode")
+                .set_file_name(&default_name)
                 .save_file()
                 .await;
             let Some(handle) = picked else { return };
@@ -651,7 +666,19 @@ impl WriterApp {
         }
         let page = self.effective_page();
         let cfg = self.gcode_config();
-        let lines = gcode::generate(&self.doc.strokes(), &cfg, page.height, None).lines;
+        // 只发送当前预览的那一页；之前是 `doc.strokes()`（整份文档所有页）
+        let strokes: Vec<Stroke> = self
+            .doc
+            .pages
+            .get(self.page_index)
+            .map(|p| p.strokes.clone())
+            .unwrap_or_default();
+        if strokes.is_empty() {
+            self.status = format!("第 {} 页没有内容", self.page_index + 1).into();
+            cx.notify();
+            return;
+        }
+        let lines = gcode::generate(&strokes, &cfg, page.height, None).lines;
         self.machine.send(machine::Cmd::Send {
             lines,
             pen_up: cfg.pen_up_lines(),
