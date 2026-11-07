@@ -19,7 +19,7 @@ use crate::stroke::{Role, Stroke};
 pub enum FontKind {
     Hershey,
     StrokeJson,
-    /// kvenjoy `.gfont` 单线字体包（ZIP + 加密头）
+    /// 历史兼容：kvenjoy `.gfont` 单线字体包（解析代码已移出本仓库）
     Gfont,
 }
 

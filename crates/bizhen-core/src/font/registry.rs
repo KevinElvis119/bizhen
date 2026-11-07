@@ -1,11 +1,11 @@
 //! 字体注册表：扫描内置字库与用户字库、按需解析、缓存。
 //!
-//! 重字体（8.4 MB 的 `STRK-Kaiti.json`、`STRK-*.gfont`）必须**懒加载**：
+//! 重字体（8.4 MB 的 `STRK-Kaiti.json`）必须**懒加载**：
 //! 启动只登记路径，真正排版到某款字体时才解析。
 //!
 //! 扫描范围：
 //! * 内置：`assets/fonts/hershey/*.jhf`、`assets/fonts/stroke-json/*.json`
-//! * 用户：`~/.bizhen/fonts/*.{jhf,json,gfont}`（可用 `BIZHEN_FONT_DIR` 覆盖），
+//! * 用户：`~/.bizhen/fonts/*.{jhf,json}`（可用 `BIZHEN_FONT_DIR` 覆盖），
 //!   界面上「导入字体」会把文件拷到这里。
 
 use std::collections::BTreeMap;
@@ -25,7 +25,7 @@ pub fn fonts_dir() -> PathBuf {
         .unwrap_or_else(|_| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/fonts"))
 }
 
-/// 用户字库目录（导入的 `.gfont` / `.jhf` / `.json` 放这里）。
+/// 用户字库目录（导入的 `.jhf` / `.json` 放这里）。
 pub fn user_font_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("BIZHEN_FONT_DIR") {
         return PathBuf::from(dir);
@@ -40,7 +40,7 @@ pub fn user_font_dir() -> PathBuf {
 pub struct FontEntry {
     /// 内部键（文件名主干，唯一）
     pub name: String,
-    /// 展示名（`.gfont` 取加密头里的真实名称）
+    /// 展示名（文件名的可读形式）
     pub display: String,
     pub kind: &'static str,
     pub path: PathBuf,
